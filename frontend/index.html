@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>РЖЯ Дактиль MVP</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="ambient"></div>
+
+  <div class="app-shell">
+    <header class="topbar module reveal reveal-1">
+      <div>
+        <p class="eyebrow">RSL DACTYL | REAL-TIME MVP</p>
+        <h1>Распознавание статических букв РЖЯ</h1>
+      </div>
+      <p class="top-note">FastAPI + MediaPipe + DINOv2 + FAISS (VLM optional)</p>
+    </header>
+
+    <main class="workspace">
+      <section class="camera-column module reveal reveal-2">
+        <div class="viewer-wrap">
+          <video id="video" autoplay playsinline muted></video>
+          <canvas id="overlay"></canvas>
+
+          <div class="viewer-caption">
+            <div class="chip chip-status">
+              <span>Состояние</span>
+              <strong id="status">NONE</strong>
+            </div>
+            <div class="chip">
+              <span>Буква</span>
+              <strong id="letter">NONE</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="startBtn">Включить камеру</button>
+          <button id="stopBtn" disabled>Остановить</button>
+          <a href="/gallery" target="_blank" rel="noreferrer">Gallery inspector</a>
+        </div>
+      </section>
+
+      <section class="panel-column">
+        <section class="module reveal reveal-3">
+          <h2>Поток распознавания</h2>
+          <div class="metrics-grid">
+            <div class="metric">
+              <span>Score</span>
+              <strong id="score">0.000</strong>
+            </div>
+            <div class="metric">
+              <span>Confidence</span>
+              <strong id="confidence">0.000</strong>
+            </div>
+            <div class="metric">
+              <span>Удержание</span>
+              <strong id="hold">0 / 0 мс</strong>
+            </div>
+            <div class="metric">
+              <span>Осталось</span>
+              <strong id="remain">0 мс</strong>
+            </div>
+          </div>
+          <div class="progress"><div id="progressBar"></div></div>
+        </section>
+
+        <section class="module reveal reveal-4 text-module">
+          <h2>Текущий результат</h2>
+          <div id="textValue" class="text-value">NONE</div>
+        </section>
+
+        <section class="panel-split reveal reveal-5">
+          <article class="module split-card">
+            <h2>Top-K кандидаты</h2>
+            <ul id="topk"></ul>
+            <div class="small" id="debug"></div>
+          </article>
+
+          <article class="module split-card">
+            <h2>VLM Judge</h2>
+            <div class="kv"><span>Использован</span><strong id="vlmUsed">false</strong></div>
+            <div class="kv"><span>Вердикт</span><strong id="vlmLetter">NONE</strong></div>
+            <div class="kv"><span>Conf</span><strong id="vlmConf">0.000</strong></div>
+            <p id="vlmReason" class="small"></p>
+          </article>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
