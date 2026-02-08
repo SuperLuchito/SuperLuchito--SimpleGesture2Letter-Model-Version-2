@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
@@ -15,6 +19,94 @@ if str(BACKEND) not in sys.path:
 
 from app.config import load_config
 from app.hand_detector import HandDetector
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MANIFEST_COLUMNS = [
+    "label",
+    "capture_mode",
+    "timestamp_utc",
+    "timestamp_ms",
+    "camera_id",
+    "bbox_area",
+    "sharpness",
+    "bright_ratio",
+    "dhash",
+    "path",
+]
+
+
+def dhash(image_bgr: np.ndarray, hash_size: int = 8) -> int:
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    resized = cv2.resize(gray, (hash_size + 1, hash_size), interpolation=cv2.INTER_AREA)
+    bits = resized[:, 1:] > resized[:, :-1]
+    value = 0
+    for bit in bits.flatten():
+        value = (value << 1) | int(bool(bit))
+    return value
+
+
+def hamming_distance(a: int, b: int) -> int:
+    return int((a ^ b).bit_count())
+
+
+def similarity_gray(image_bgr: np.ndarray, size: int = 160) -> np.ndarray:
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    return cv2.resize(gray, (size, size), interpolation=cv2.INTER_AREA).astype(np.float32)
+
+
+def ssim(gray_a: np.ndarray, gray_b: np.ndarray) -> float:
+    c1 = (0.01 * 255.0) ** 2
+    c2 = (0.03 * 255.0) ** 2
+
+    mu_a = cv2.GaussianBlur(gray_a, (11, 11), 1.5)
+    mu_b = cv2.GaussianBlur(gray_b, (11, 11), 1.5)
+
+    mu_a_sq = mu_a * mu_a
+    mu_b_sq = mu_b * mu_b
+    mu_ab = mu_a * mu_b
+
+    sigma_a_sq = cv2.GaussianBlur(gray_a * gray_a, (11, 11), 1.5) - mu_a_sq
+    sigma_b_sq = cv2.GaussianBlur(gray_b * gray_b, (11, 11), 1.5) - mu_b_sq
+    sigma_ab = cv2.GaussianBlur(gray_a * gray_b, (11, 11), 1.5) - mu_ab
+
+    numerator = (2.0 * mu_ab + c1) * (2.0 * sigma_ab + c2)
+    denominator = (mu_a_sq + mu_b_sq + c1) * (sigma_a_sq + sigma_b_sq + c2)
+    ssim_map = numerator / (denominator + 1e-12)
+    return float(np.mean(ssim_map))
+
+
+def append_manifest(jsonl_path: Path, csv_path: Path, row: dict[str, str | int | float]) -> None:
+    with jsonl_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    csv_exists = csv_path.exists()
+    with csv_path.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=MANIFEST_COLUMNS)
+        if not csv_exists:
+            writer.writeheader()
+        writer.writerow({key: row.get(key, "") for key in MANIFEST_COLUMNS})
+
+
+def quality_check(
+    crop_bgr: np.ndarray,
+    *,
+    min_sharpness: float,
+    max_bright_ratio: float,
+    bbox_area: float,
+    min_capture_bbox_area: float,
+    require_bbox_area: bool,
+) -> tuple[bool, float, float, str]:
+    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_32F).var())
+    bright_ratio = float(np.mean(gray >= 245))
+
+    if sharpness < min_sharpness:
+        return False, sharpness, bright_ratio, f"blur ({sharpness:.1f} < {min_sharpness:.1f})"
+    if bright_ratio > max_bright_ratio:
+        return False, sharpness, bright_ratio, f"overexposed ({bright_ratio:.2f} > {max_bright_ratio:.2f})"
+    if require_bbox_area and bbox_area < min_capture_bbox_area:
+        return False, sharpness, bright_ratio, f"small_bbox ({bbox_area:.4f} < {min_capture_bbox_area:.4f})"
+    return True, sharpness, bright_ratio, ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,6 +118,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auto", action="store_true", help="Автосохранение по таймеру")
     parser.add_argument("--config", default=str(BACKEND / "config.yaml"))
     parser.add_argument("--gallery", default=str(BACKEND / "gallery"))
+    parser.add_argument("--min-sharpness", type=float, default=45.0, help="Порог резкости (Laplacian var)")
+    parser.add_argument("--max-bright-ratio", type=float, default=0.35, help="Макс. доля пересвеченных пикселей")
+    parser.add_argument("--min-capture-bbox-area", type=float, default=0.06, help="Мин. площадь bbox руки")
+    parser.add_argument("--dedup-hamming-th", type=int, default=6, help="Порог dHash дедупликации")
+    parser.add_argument("--dedup-ssim-th", type=float, default=0.985, help="Порог SSIM дедупликации")
+    parser.add_argument("--dedup-ref-limit", type=int, default=80, help="Сколько последних кадров сравнивать")
     return parser.parse_args()
 
 
@@ -35,6 +133,9 @@ def main() -> int:
 
     out_dir = Path(args.gallery) / args.label
     out_dir.mkdir(parents=True, exist_ok=True)
+    manifest_jsonl = out_dir / "manifest.jsonl"
+    manifest_csv = out_dir / "manifest.csv"
+    min_capture_bbox_area = max(float(cfg.min_bbox_area), float(args.min_capture_bbox_area))
 
     cap = cv2.VideoCapture(args.camera_id)
     if not cap.isOpened():
@@ -61,8 +162,76 @@ def main() -> int:
     auto_mode = args.auto
     last_save_ms = 0
     saved = 0
+    dedup_hashes: list[int] = []
+    dedup_refs: list[np.ndarray] = []
+    dedup_ref_limit = max(1, int(args.dedup_ref_limit))
 
     print("[capture_gallery] Горячие клавиши: s=save, a=auto on/off, q=quit")
+    print(
+        "[capture_gallery] QC: "
+        f"min_sharpness={args.min_sharpness}, "
+        f"max_bright_ratio={args.max_bright_ratio}, "
+        f"min_capture_bbox_area={min_capture_bbox_area:.4f}"
+    )
+
+    def try_save(crop_bgr: np.ndarray | None, *, capture_mode: str, ts_ms: int, bbox_area: float) -> bool:
+        nonlocal saved, last_save_ms
+
+        if crop_bgr is None:
+            print(f"[capture_gallery] skip ({capture_mode}): no_crop")
+            return False
+
+        ok, sharpness, bright_ratio, reason = quality_check(
+            crop_bgr,
+            min_sharpness=float(args.min_sharpness),
+            max_bright_ratio=float(args.max_bright_ratio),
+            bbox_area=float(bbox_area),
+            min_capture_bbox_area=min_capture_bbox_area,
+            require_bbox_area=(detector is not None),
+        )
+        if not ok:
+            print(f"[capture_gallery] skip ({capture_mode}): {reason}")
+            return False
+
+        current_hash = dhash(crop_bgr)
+        for prev_hash in dedup_hashes[-dedup_ref_limit:]:
+            dist = hamming_distance(current_hash, prev_hash)
+            if dist <= args.dedup_hamming_th:
+                print(f"[capture_gallery] skip ({capture_mode}): duplicate_dhash (distance={dist})")
+                return False
+
+        current_ref = similarity_gray(crop_bgr)
+        for prev_ref in dedup_refs[-dedup_ref_limit:]:
+            score = ssim(current_ref, prev_ref)
+            if score >= args.dedup_ssim_th:
+                print(f"[capture_gallery] skip ({capture_mode}): duplicate_ssim (score={score:.4f})")
+                return False
+
+        saved += 1
+        now_utc = datetime.now(timezone.utc)
+        ts_wall_ms = int(now_utc.timestamp() * 1000)
+        filename = out_dir / f"{ts_wall_ms}_{saved:03d}.jpg"
+        cv2.imwrite(str(filename), crop_bgr)
+        last_save_ms = ts_ms
+
+        dedup_hashes.append(current_hash)
+        dedup_refs.append(current_ref)
+
+        row = {
+            "label": args.label,
+            "capture_mode": capture_mode,
+            "timestamp_utc": now_utc.isoformat(),
+            "timestamp_ms": ts_wall_ms,
+            "camera_id": args.camera_id,
+            "bbox_area": round(float(bbox_area), 6),
+            "sharpness": round(sharpness, 4),
+            "bright_ratio": round(bright_ratio, 6),
+            "dhash": format(current_hash, "016x"),
+            "path": str(filename.resolve()),
+        }
+        append_manifest(manifest_jsonl, manifest_csv, row)
+        print(f"[capture_gallery] saved: {filename}")
+        return True
 
     while saved < args.count:
         ok, frame = cap.read()
@@ -71,6 +240,7 @@ def main() -> int:
 
         ts_ms = int(time.monotonic() * 1000)
         crop = None
+        bbox_area = 0.0
 
         if detector is not None:
             det = detector.detect(frame, ts_ms)
@@ -78,12 +248,14 @@ def main() -> int:
                 crop = det.crop_bgr
                 x1, y1, x2, y2 = det.bbox_px
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 230, 80), 2)
+                nx1, ny1, nx2, ny2 = det.bbox_norm
+                bbox_area = float(max(0.0, (nx2 - nx1) * (ny2 - ny1)))
             cv2.putText(
                 frame,
-                f"hand={det.hand_present}",
+                f"hand={det.hand_present} area={bbox_area:.4f}",
                 (12, 26),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.62,
                 (80, 230, 80) if det.hand_present else (60, 60, 220),
                 2,
             )
@@ -110,11 +282,7 @@ def main() -> int:
         )
 
         if auto_mode and crop is not None and (ts_ms - last_save_ms) >= args.interval_ms:
-            saved += 1
-            filename = out_dir / f"{int(time.time() * 1000)}_{saved:03d}.jpg"
-            cv2.imwrite(str(filename), crop)
-            last_save_ms = ts_ms
-            print(f"[capture_gallery] saved: {filename}")
+            try_save(crop, capture_mode="auto", ts_ms=ts_ms, bbox_area=bbox_area)
 
         cv2.imshow("capture_gallery", frame)
         key = cv2.waitKey(1) & 0xFF
@@ -124,16 +292,16 @@ def main() -> int:
         if key == ord("a"):
             auto_mode = not auto_mode
         if key == ord("s") and crop is not None:
-            saved += 1
-            filename = out_dir / f"{int(time.time() * 1000)}_{saved:03d}.jpg"
-            cv2.imwrite(str(filename), crop)
-            last_save_ms = ts_ms
-            print(f"[capture_gallery] saved: {filename}")
+            try_save(crop, capture_mode="manual", ts_ms=ts_ms, bbox_area=bbox_area)
 
     cap.release()
     cv2.destroyAllWindows()
 
+    images = [p for p in out_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS]
     print(f"[capture_gallery] Завершено. Сохранено {saved} файлов в {out_dir}")
+    print(f"[capture_gallery] Итог файлов в папке: {len(images)}")
+    print(f"[capture_gallery] Manifest: {manifest_jsonl}")
+    print(f"[capture_gallery] Manifest: {manifest_csv}")
     return 0
 
 
