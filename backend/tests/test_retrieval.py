@@ -28,3 +28,14 @@ def test_scan_gallery_filters_none_and_allowlist(tmp_path: Path) -> None:
 
     only_a = scan_gallery(tmp_path, none_label_dir='_none', letters_allowlist=['А'])
     assert [e.letter for e in only_a] == ['А']
+
+
+def test_scan_gallery_includes_session_subfolders(tmp_path: Path) -> None:
+    session_dir = tmp_path / 'А' / 'session_1'
+    session_dir.mkdir(parents=True)
+    (session_dir / 'a1.jpg').write_bytes(b'x')
+    (session_dir / 'a2.png').write_bytes(b'x')
+
+    entries = scan_gallery(tmp_path, none_label_dir='_none', letters_allowlist=[])
+    assert len(entries) == 2
+    assert {e.letter for e in entries} == {'А'}

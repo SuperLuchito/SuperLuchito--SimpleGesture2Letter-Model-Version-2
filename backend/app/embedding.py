@@ -57,12 +57,11 @@ class DinoEmbedder:
         self.model.to("cpu")
         self.device = "cpu"
 
-    def embed_rgb(self, image_rgb: np.ndarray) -> np.ndarray:
-        if image_rgb.ndim != 3:
-            raise ValueError("embed_rgb expects HxWxC image array.")
+    def _forward_pil_batch(self, pil_images: list[Image.Image]) -> np.ndarray:
+        if not pil_images:
+            return np.zeros((0, 384), dtype=np.float32)
 
-        pil_image = Image.fromarray(image_rgb)
-        inputs = self.processor(images=pil_image, return_tensors="pt")
+        inputs = self.processor(images=pil_images, return_tensors="pt")
         torch = self.torch
         assert torch is not None
 
@@ -83,12 +82,29 @@ class DinoEmbedder:
         cls_token = outputs.last_hidden_state[:, 0, :].detach().cpu().numpy().astype(np.float32)
         return l2_normalize(cls_token)
 
-    def embed_path(self, path: str | Path) -> np.ndarray:
-        img = Image.open(path).convert("RGB")
-        return self.embed_rgb(np.asarray(img))
+    def embed_rgb(self, image_rgb: np.ndarray) -> np.ndarray:
+        if image_rgb.ndim != 3:
+            raise ValueError("embed_rgb expects HxWxC image array.")
+        pil_image = Image.fromarray(image_rgb)
+        return self._forward_pil_batch([pil_image])
 
-    def embed_many_paths(self, paths: Iterable[str | Path]) -> np.ndarray:
-        vectors = [self.embed_path(path) for path in paths]
-        if not vectors:
+    def embed_path(self, path: str | Path) -> np.ndarray:
+        with Image.open(path) as img:
+            rgb = img.convert("RGB")
+        return self._forward_pil_batch([rgb])
+
+    def embed_many_paths(self, paths: Iterable[str | Path], batch_size: int = 16) -> np.ndarray:
+        path_list = [Path(p) for p in paths]
+        if not path_list:
             return np.zeros((0, 384), dtype=np.float32)
-        return np.concatenate(vectors, axis=0)
+
+        bsz = max(1, int(batch_size))
+        chunks: list[np.ndarray] = []
+        for start in range(0, len(path_list), bsz):
+            batch_paths = path_list[start : start + bsz]
+            pil_images: list[Image.Image] = []
+            for path in batch_paths:
+                with Image.open(path) as img:
+                    pil_images.append(img.convert("RGB"))
+            chunks.append(self._forward_pil_batch(pil_images))
+        return np.concatenate(chunks, axis=0)

@@ -23,6 +23,7 @@ from app.hand_detector import HandDetector
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MANIFEST_COLUMNS = [
     "label",
+    "session_id",
     "capture_mode",
     "timestamp_utc",
     "timestamp_ms",
@@ -33,6 +34,16 @@ MANIFEST_COLUMNS = [
     "dhash",
     "path",
 ]
+
+
+def build_session_id(explicit: str | None) -> str:
+    if explicit is None or not explicit.strip():
+        return datetime.now(timezone.utc).strftime("session_%Y%m%dT%H%M%SZ")
+
+    value = explicit.strip().replace("/", "-").replace("\\", "-").replace(" ", "_")
+    if not value:
+        raise ValueError("session_id must not be empty")
+    return value
 
 
 def dhash(image_bgr: np.ndarray, hash_size: int = 8) -> int:
@@ -112,6 +123,7 @@ def quality_check(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Capture gallery samples from webcam")
     parser.add_argument("--label", required=True, help="Буква или _none")
+    parser.add_argument("--session-id", default="", help="ID сессии (по умолчанию авто session_YYYYMMDD...)")
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--camera-id", type=int, default=0)
     parser.add_argument("--interval-ms", type=int, default=500)
@@ -131,10 +143,14 @@ def main() -> int:
     args = parse_args()
     cfg = load_config(args.config)
 
-    out_dir = Path(args.gallery) / args.label
-    out_dir.mkdir(parents=True, exist_ok=True)
-    manifest_jsonl = out_dir / "manifest.jsonl"
-    manifest_csv = out_dir / "manifest.csv"
+    label_dir = Path(args.gallery) / args.label
+    label_dir.mkdir(parents=True, exist_ok=True)
+    session_id = build_session_id(args.session_id)
+    session_dir = label_dir / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_jsonl = session_dir / "manifest.jsonl"
+    manifest_csv = session_dir / "manifest.csv"
     min_capture_bbox_area = max(float(cfg.min_bbox_area), float(args.min_capture_bbox_area))
 
     cap = cv2.VideoCapture(args.camera_id)
@@ -167,6 +183,8 @@ def main() -> int:
     dedup_ref_limit = max(1, int(args.dedup_ref_limit))
 
     print("[capture_gallery] Горячие клавиши: s=save, a=auto on/off, q=quit")
+    print(f"[capture_gallery] Session: {session_id}")
+    print(f"[capture_gallery] Output dir: {session_dir}")
     print(
         "[capture_gallery] QC: "
         f"min_sharpness={args.min_sharpness}, "
@@ -210,7 +228,7 @@ def main() -> int:
         saved += 1
         now_utc = datetime.now(timezone.utc)
         ts_wall_ms = int(now_utc.timestamp() * 1000)
-        filename = out_dir / f"{ts_wall_ms}_{saved:03d}.jpg"
+        filename = session_dir / f"{ts_wall_ms}_{saved:03d}.jpg"
         cv2.imwrite(str(filename), crop_bgr)
         last_save_ms = ts_ms
 
@@ -219,6 +237,7 @@ def main() -> int:
 
         row = {
             "label": args.label,
+            "session_id": session_id,
             "capture_mode": capture_mode,
             "timestamp_utc": now_utc.isoformat(),
             "timestamp_ms": ts_wall_ms,
@@ -297,9 +316,11 @@ def main() -> int:
     cap.release()
     cv2.destroyAllWindows()
 
-    images = [p for p in out_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS]
-    print(f"[capture_gallery] Завершено. Сохранено {saved} файлов в {out_dir}")
-    print(f"[capture_gallery] Итог файлов в папке: {len(images)}")
+    images_session = [p for p in session_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS]
+    images_label = [p for p in label_dir.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS]
+    print(f"[capture_gallery] Завершено. Сохранено {saved} файлов в {session_dir}")
+    print(f"[capture_gallery] Итог файлов в сессии: {len(images_session)}")
+    print(f"[capture_gallery] Итог файлов по букве '{args.label}': {len(images_label)}")
     print(f"[capture_gallery] Manifest: {manifest_jsonl}")
     print(f"[capture_gallery] Manifest: {manifest_csv}")
     return 0

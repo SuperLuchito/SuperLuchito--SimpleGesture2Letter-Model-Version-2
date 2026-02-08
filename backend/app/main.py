@@ -632,10 +632,13 @@ def api_gallery() -> JSONResponse:
 
     for label_dir in sorted(p for p in GALLERY_DIR.iterdir() if p.is_dir()):
         urls = []
-        for img in sorted(label_dir.iterdir()):
+        for img in sorted(label_dir.rglob("*")):
+            if not img.is_file():
+                continue
             if img.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
                 continue
-            urls.append(f"/gallery_files/{label_dir.name}/{img.name}")
+            rel_path = img.relative_to(GALLERY_DIR).as_posix()
+            urls.append(f"/gallery_files/{rel_path}")
         payload[label_dir.name] = urls
     return JSONResponse(payload)
 

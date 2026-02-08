@@ -57,7 +57,7 @@ def scan_gallery(
         if use_allow and label not in allow:
             continue
 
-        for path in sorted(label_dir.iterdir()):
+        for path in sorted(label_dir.rglob("*")):
             if path.suffix.lower() in IMAGE_EXTENSIONS and path.is_file():
                 entries.append(GalleryEntry(path=str(path.resolve()), letter=label))
 
