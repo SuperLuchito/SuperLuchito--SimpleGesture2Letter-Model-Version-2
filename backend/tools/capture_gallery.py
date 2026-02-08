@@ -31,6 +31,7 @@ MANIFEST_COLUMNS = [
     "bbox_area",
     "sharpness",
     "bright_ratio",
+    "mirror",
     "dhash",
     "path",
 ]
@@ -120,6 +121,51 @@ def quality_check(
     return True, sharpness, bright_ratio, ""
 
 
+def build_operator_hints(
+    *,
+    detector_enabled: bool,
+    hand_present: bool,
+    bbox_area: float,
+    bbox_norm: tuple[float, float, float, float],
+    frame_bgr: np.ndarray,
+    crop_bgr: np.ndarray | None,
+    min_capture_bbox_area: float,
+    min_sharpness: float,
+) -> list[str]:
+    hints: list[str] = []
+
+    scene_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    scene_luma = float(np.mean(scene_gray))
+    if scene_luma < 55.0:
+        hints.append("темно")
+
+    if detector_enabled:
+        if not hand_present:
+            hints.append("покажите руку в кадре")
+        else:
+            if bbox_area > 0.30:
+                hints.append("слишком близко")
+            if 0.0 < bbox_area < min_capture_bbox_area:
+                hints.append("поднесите руку ближе")
+
+            x1, y1, x2, y2 = bbox_norm
+            bw = max(1e-6, x2 - x1)
+            bh = max(1e-6, y2 - y1)
+            aspect = bw / bh
+            if aspect < 0.55 or aspect > 1.8:
+                hints.append("поверните руку фронтально")
+
+            if crop_bgr is not None:
+                crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+                sharpness_preview = float(cv2.Laplacian(crop_gray, cv2.CV_32F).var())
+                if sharpness_preview < (min_sharpness * 0.75):
+                    hints.append("стабилизируйте руку")
+
+    if not hints:
+        return ["ок"]
+    return list(dict.fromkeys(hints))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Capture gallery samples from webcam")
     parser.add_argument("--label", required=True, help="Буква или _none")
@@ -128,6 +174,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-id", type=int, default=0)
     parser.add_argument("--interval-ms", type=int, default=500)
     parser.add_argument("--auto", action="store_true", help="Автосохранение по таймеру")
+    parser.add_argument("--mirror", action="store_true", help="Зеркалить кадры (preview + сохранение)")
     parser.add_argument("--config", default=str(BACKEND / "config.yaml"))
     parser.add_argument("--gallery", default=str(BACKEND / "gallery"))
     parser.add_argument("--min-sharpness", type=float, default=45.0, help="Порог резкости (Laplacian var)")
@@ -185,6 +232,7 @@ def main() -> int:
     print("[capture_gallery] Горячие клавиши: s=save, a=auto on/off, q=quit")
     print(f"[capture_gallery] Session: {session_id}")
     print(f"[capture_gallery] Output dir: {session_dir}")
+    print(f"[capture_gallery] Mirror: {bool(args.mirror)}")
     print(
         "[capture_gallery] QC: "
         f"min_sharpness={args.min_sharpness}, "
@@ -245,6 +293,7 @@ def main() -> int:
             "bbox_area": round(float(bbox_area), 6),
             "sharpness": round(sharpness, 4),
             "bright_ratio": round(bright_ratio, 6),
+            "mirror": bool(args.mirror),
             "dhash": format(current_hash, "016x"),
             "path": str(filename.resolve()),
         }
@@ -256,19 +305,25 @@ def main() -> int:
         ok, frame = cap.read()
         if not ok:
             continue
+        if args.mirror:
+            frame = cv2.flip(frame, 1)
 
         ts_ms = int(time.monotonic() * 1000)
         crop = None
         bbox_area = 0.0
+        bbox_norm = (0.0, 0.0, 0.0, 0.0)
+        hand_present = False
 
         if detector is not None:
             det = detector.detect(frame, ts_ms)
+            hand_present = bool(det.hand_present)
             if det.hand_present and det.crop_bgr is not None:
                 crop = det.crop_bgr
                 x1, y1, x2, y2 = det.bbox_px
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 230, 80), 2)
                 nx1, ny1, nx2, ny2 = det.bbox_norm
                 bbox_area = float(max(0.0, (nx2 - nx1) * (ny2 - ny1)))
+                bbox_norm = (nx1, ny1, nx2, ny2)
             cv2.putText(
                 frame,
                 f"hand={det.hand_present} area={bbox_area:.4f}",
@@ -290,10 +345,41 @@ def main() -> int:
                 2,
             )
 
+        hints = build_operator_hints(
+            detector_enabled=(detector is not None),
+            hand_present=hand_present,
+            bbox_area=bbox_area,
+            bbox_norm=bbox_norm,
+            frame_bgr=frame,
+            crop_bgr=crop,
+            min_capture_bbox_area=min_capture_bbox_area,
+            min_sharpness=float(args.min_sharpness),
+        )
+        primary_hint = hints[0]
+        cv2.putText(
+            frame,
+            f"hint: {primary_hint}",
+            (12, 84),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.64,
+            (80, 230, 80) if primary_hint == "ок" else (255, 210, 80),
+            2,
+        )
+        for idx, hint in enumerate(hints[1:3], start=1):
+            cv2.putText(
+                frame,
+                f"hint{idx + 1}: {hint}",
+                (12, 84 + (idx * 24)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                (255, 210, 80),
+                2,
+            )
+
         cv2.putText(
             frame,
             f"label={args.label} saved={saved}/{args.count} auto={auto_mode}",
-            (12, 56),
+            (12, 56 if len(hints) <= 1 else 138),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (255, 255, 255),

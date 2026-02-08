@@ -16,6 +16,7 @@ if str(BACKEND) not in sys.path:
 from app.config import load_config
 from app.embedding import DinoEmbedder
 from app.retrieval import GalleryEntry, build_faiss_index, save_metadata, scan_gallery
+from tools.eval_sanity_split import run_sanity_evaluation
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +31,25 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.5,
         help="Порог предупреждения по дисбалансу: min_count/max_count",
+    )
+    parser.add_argument(
+        "--sanity-split",
+        type=float,
+        default=0.0,
+        help="Доля validation для sanity-check. 0 отключает оценку.",
+    )
+    parser.add_argument("--sanity-seed", type=int, default=42)
+    parser.add_argument("--sanity-min-val-per-class", type=int, default=1)
+    parser.add_argument("--sanity-min-train-per-class", type=int, default=2)
+    parser.add_argument(
+        "--sanity-report",
+        default="",
+        help="Путь к файлу sanity-метрик JSON (по умолчанию backend/artifacts/sanity_eval.json)",
+    )
+    parser.add_argument(
+        "--sanity-split-file",
+        default="",
+        help="Путь к файлу train/val split JSON (по умолчанию backend/artifacts/sanity_split.json)",
     )
     return parser.parse_args()
 
@@ -68,6 +88,11 @@ def print_dataset_report(entries: list[GalleryEntry], ratio_warn: float) -> None
 def main() -> int:
     args = parse_args()
     cfg = load_config(args.config)
+
+    sanity_ratio = float(args.sanity_split)
+    if sanity_ratio < 0.0 or sanity_ratio >= 1.0:
+        print("[build_index] --sanity-split должен быть в диапазоне [0, 1).")
+        return 1
 
     gallery_dir = Path(args.gallery)
     artifacts_dir = Path(args.artifacts)
@@ -124,6 +149,33 @@ def main() -> int:
 
     print(f"[build_index] Готово: {index_path}")
     print(f"[build_index] Готово: {meta_path}")
+
+    if sanity_ratio > 0.0:
+        report_path = Path(args.sanity_report) if str(args.sanity_report).strip() else artifacts_dir / "sanity_eval.json"
+        split_path = Path(args.sanity_split_file) if str(args.sanity_split_file).strip() else artifacts_dir / "sanity_split.json"
+        print("[build_index] Запуск sanity split-оценки...")
+        report = run_sanity_evaluation(
+            entries=entries,
+            embedding_model=cfg.embedding_model,
+            device=cfg.device,
+            val_ratio=sanity_ratio,
+            seed=int(args.sanity_seed),
+            min_val_per_class=max(1, int(args.sanity_min_val_per_class)),
+            min_train_per_class=max(1, int(args.sanity_min_train_per_class)),
+            k=max(1, int(args.k)),
+            batch_size=batch_size,
+            report_path=report_path,
+            split_path=split_path,
+            embedder=embedder,
+        )
+        summary = report["summary"]
+        print(
+            "[build_index] sanity metrics: "
+            f"top1={summary['top1_acc']:.4f}, topk={summary['topk_acc']:.4f}, "
+            f"val={summary['val_samples']}, k={summary['k']}"
+        )
+        print(f"[build_index] sanity report: {report['paths']['report_file']}")
+        print(f"[build_index] sanity split: {report['paths']['split_file']}")
     return 0
 
 
