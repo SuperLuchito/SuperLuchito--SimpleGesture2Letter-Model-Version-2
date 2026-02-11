@@ -70,6 +70,7 @@ class RuntimeContext:
                     min_bbox_area=cfg.min_bbox_area,
                     bbox_padding=cfg.hand_bbox_padding,
                     focus_ratio=cfg.hand_focus_ratio,
+                    wrist_extension_ratio=cfg.hand_wrist_extension_ratio,
                     bg_suppression=cfg.hand_bg_suppression,
                     bg_darken_factor=cfg.hand_bg_darken_factor,
                     mask_dilate_ratio=cfg.hand_mask_dilate_ratio,

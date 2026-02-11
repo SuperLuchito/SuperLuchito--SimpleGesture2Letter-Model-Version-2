@@ -70,16 +70,53 @@ python backend/tools/capture_gallery.py --label А --count 10 --auto
 python backend/tools/capture_gallery.py --label Б --count 10 --auto
 ```
 
+Пример съёмки с зеркалом:
+
+```bash
+python backend/tools/capture_gallery.py --label А --count 40 --auto --mirror
+```
+
 Для фона/none:
 
 ```bash
 python backend/tools/capture_gallery.py --label _none --count 30 --auto
 ```
 
+### Как работает дедупликация кадров (capture_gallery)
+
+В проекте используется 3-ступенчатый дедуп:
+
+- `dHash` (быстрый фильтр): отсекает почти идентичные кадры мгновенно и дёшево.
+- `DINOv2 cosine` (основной критерий): сравнивает смысловые эмбеддинги руки, чтобы не хранить почти одинаковые позы при небольших пиксельных отличиях.
+- `SSIM` (tie-break в пограничной зоне): включается только когда cosine близок к порогу, чтобы не удалить полезное разнообразие слишком агрессивно.
+
+Настройки порогов:
+
+```bash
+python backend/tools/capture_gallery.py \
+  --label А --count 40 --auto --mirror \
+  --dedup-hamming-th 2 \
+  --dedup-cosine-th 0.995 \
+  --dedup-cosine-margin 0.004 \
+  --dedup-ssim-th 0.985
+```
+
 ### 2. Сборка индекса
 
 ```bash
 python backend/tools/build_index.py
+```
+
+Сборка индекса + sanity-eval одним запуском:
+
+```bash
+python backend/tools/build_index.py --batch-size 16 --sanity-split 0.2 --k 5
+```
+
+Отдельный sanity-eval:
+
+```bash
+python backend/tools/eval_sanity_split.py --val-ratio 0.2 --k 5
 ```
 
 ### 3. Калибровка порогов
@@ -124,7 +161,7 @@ enable_vlm_judge: false
 - `hold_ms`, `cooldown_ms`
 - `sim_none`, `sim_vlm_th`, `margin_th`
 - `switch_min_frames`, `precommit_ratio`
-- `hand_bbox_padding`, `hand_focus_ratio`
+- `hand_bbox_padding`, `hand_focus_ratio`, `hand_wrist_extension_ratio`
 - `hand_bg_suppression`, `hand_bg_darken_factor`
 - `hand_mask_dilate_ratio`, `hand_mask_blur_sigma`
 
@@ -165,6 +202,12 @@ KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 ...
 - Переснимите эталоны (больше и лучше).
 - Пересоберите индекс и перекалибруйте пороги.
 - Проверьте `sim_none` и `hand_*` параметры в `config.yaml`.
+
+### Кроп обрезает ладонь/кисть
+
+- Увеличьте `hand_bbox_padding` (например `0.20-0.28`).
+- Не занижайте `hand_focus_ratio` (держите `1.0`, чтобы bbox не сжимался).
+- Поднимите `hand_wrist_extension_ratio` (`0.18-0.30`), чтобы кроп расширялся в сторону запястья.
 
 ## Полезные ссылки
 

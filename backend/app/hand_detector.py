@@ -31,8 +31,9 @@ class HandDetector:
         model_path: str,
         *,
         min_bbox_area: float = 0.04,
-        bbox_padding: float = 0.15,
-        focus_ratio: float = 0.92,
+        bbox_padding: float = 0.2,
+        focus_ratio: float = 1.0,
+        wrist_extension_ratio: float = 0.18,
         bg_suppression: bool = True,
         bg_darken_factor: float = 0.45,
         mask_dilate_ratio: float = 0.08,
@@ -42,7 +43,8 @@ class HandDetector:
         self.model_path = Path(model_path)
         self.min_bbox_area = min_bbox_area
         self.bbox_padding = bbox_padding
-        self.focus_ratio = float(np.clip(focus_ratio, 0.7, 1.0))
+        self.focus_ratio = float(np.clip(focus_ratio, 0.7, 1.25))
+        self.wrist_extension_ratio = float(np.clip(wrist_extension_ratio, 0.0, 0.6))
         self.bg_suppression = bool(bg_suppression)
         self.bg_darken_factor = float(np.clip(bg_darken_factor, 0.0, 1.0))
         self.mask_dilate_ratio = float(max(0.0, mask_dilate_ratio))
@@ -99,6 +101,59 @@ class HandDetector:
         tx2 = float(np.clip(cx + (w * 0.5), 0.0, 1.0))
         ty2 = float(np.clip(cy + (h * 0.5), 0.0, 1.0))
         return tx1, ty1, tx2, ty2
+
+    def _expand_towards_wrist(
+        self,
+        landmarks: Any,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> tuple[float, float, float, float]:
+        if self.wrist_extension_ratio <= 0.0:
+            return x1, y1, x2, y2
+        if landmarks is None or len(landmarks) == 0:
+            return x1, y1, x2, y2
+
+        try:
+            wrist = landmarks[0]
+        except Exception:
+            return x1, y1, x2, y2
+
+        palm_ids = (0, 5, 9, 13, 17)
+        palm_xs: list[float] = []
+        palm_ys: list[float] = []
+        for idx in palm_ids:
+            if idx < len(landmarks):
+                palm_xs.append(float(landmarks[idx].x))
+                palm_ys.append(float(landmarks[idx].y))
+        if not palm_xs:
+            return x1, y1, x2, y2
+
+        palm_cx = float(np.mean(palm_xs))
+        palm_cy = float(np.mean(palm_ys))
+        dx = float(wrist.x) - palm_cx
+        dy = float(wrist.y) - palm_cy
+        norm = float(np.hypot(dx, dy))
+        if norm < 1e-6:
+            return x1, y1, x2, y2
+
+        ux = dx / norm
+        uy = dy / norm
+        base = max(1e-6, max(x2 - x1, y2 - y1))
+        extra = self.wrist_extension_ratio * base
+        ex = ux * extra
+        ey = uy * extra
+
+        if ex < 0.0:
+            x1 = float(np.clip(x1 + ex, 0.0, 1.0))
+        else:
+            x2 = float(np.clip(x2 + ex, 0.0, 1.0))
+        if ey < 0.0:
+            y1 = float(np.clip(y1 + ey, 0.0, 1.0))
+        else:
+            y2 = float(np.clip(y2 + ey, 0.0, 1.0))
+        return x1, y1, x2, y2
 
     @staticmethod
     def _landmarks_to_crop_points(
@@ -178,6 +233,7 @@ class HandDetector:
         y1 = float(np.clip(ys.min() - self.bbox_padding, 0.0, 1.0))
         x2 = float(np.clip(xs.max() + self.bbox_padding, 0.0, 1.0))
         y2 = float(np.clip(ys.max() + self.bbox_padding, 0.0, 1.0))
+        x1, y1, x2, y2 = self._expand_towards_wrist(landmarks, x1, y1, x2, y2)
         x1, y1, x2, y2 = self._tighten_bbox(x1, y1, x2, y2)
 
         area = max(0.0, (x2 - x1) * (y2 - y1))
