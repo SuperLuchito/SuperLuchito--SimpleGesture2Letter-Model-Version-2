@@ -20,7 +20,6 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app.config import load_config
-from app.embedding import DinoEmbedder
 from app.hand_detector import HandDetector
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -34,10 +33,10 @@ MANIFEST_COLUMNS = [
     "bbox_area",
     "sharpness",
     "bright_ratio",
+    "distance_bucket",
     "mirror",
-    "dhash",
-    "dino_cosine_max",
-    "ssim_best",
+    "frame_delta",
+    "bbox_delta",
     "dedup_strategy",
     "path",
 ]
@@ -69,53 +68,30 @@ def build_session_id(explicit: str | None) -> str:
     return value
 
 
-def dhash(image_bgr: np.ndarray, hash_size: int = 8) -> int:
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    resized = cv2.resize(gray, (hash_size + 1, hash_size), interpolation=cv2.INTER_AREA)
-    bits = resized[:, 1:] > resized[:, :-1]
-    value = 0
-    for bit in bits.flatten():
-        value = (value << 1) | int(bool(bit))
-    return value
-
-
-def hamming_distance(a: int, b: int) -> int:
-    return int((a ^ b).bit_count())
-
-
-def cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
-    a = vec_a.astype(np.float32, copy=False)
-    b = vec_b.astype(np.float32, copy=False)
-    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-    if denom <= 1e-12:
-        return 0.0
-    return float(np.dot(a, b) / denom)
-
-
 def similarity_gray(image_bgr: np.ndarray, size: int = 160) -> np.ndarray:
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     return cv2.resize(gray, (size, size), interpolation=cv2.INTER_AREA).astype(np.float32)
 
 
-def ssim(gray_a: np.ndarray, gray_b: np.ndarray) -> float:
-    c1 = (0.01 * 255.0) ** 2
-    c2 = (0.03 * 255.0) ** 2
+def mean_abs_frame_delta(curr_ref: np.ndarray, prev_ref: np.ndarray) -> float:
+    return float(np.mean(np.abs(curr_ref - prev_ref)))
 
-    mu_a = cv2.GaussianBlur(gray_a, (11, 11), 1.5)
-    mu_b = cv2.GaussianBlur(gray_b, (11, 11), 1.5)
 
-    mu_a_sq = mu_a * mu_a
-    mu_b_sq = mu_b * mu_b
-    mu_ab = mu_a * mu_b
+def compute_quality_metrics(crop_bgr: np.ndarray) -> tuple[float, float]:
+    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_32F).var())
+    bright_ratio = float(np.mean(gray >= 245))
+    return sharpness, bright_ratio
 
-    sigma_a_sq = cv2.GaussianBlur(gray_a * gray_a, (11, 11), 1.5) - mu_a_sq
-    sigma_b_sq = cv2.GaussianBlur(gray_b * gray_b, (11, 11), 1.5) - mu_b_sq
-    sigma_ab = cv2.GaussianBlur(gray_a * gray_b, (11, 11), 1.5) - mu_ab
 
-    numerator = (2.0 * mu_ab + c1) * (2.0 * sigma_ab + c2)
-    denominator = (mu_a_sq + mu_b_sq + c1) * (sigma_a_sq + sigma_b_sq + c2)
-    ssim_map = numerator / (denominator + 1e-12)
-    return float(np.mean(ssim_map))
+def distance_bucket_from_bbox(bbox_area: float) -> str:
+    if bbox_area <= 0.0:
+        return "unknown"
+    if bbox_area < 0.08:
+        return "far"
+    if bbox_area <= 0.18:
+        return "mid"
+    return "near"
 
 
 def append_manifest(jsonl_path: Path, csv_path: Path, row: dict[str, str | int | float]) -> None:
@@ -165,28 +141,6 @@ def draw_text_items(frame_bgr: np.ndarray, items: list[TextItem]) -> np.ndarray:
     return cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
 
 
-def quality_check(
-    crop_bgr: np.ndarray,
-    *,
-    min_sharpness: float,
-    max_bright_ratio: float,
-    bbox_area: float,
-    min_capture_bbox_area: float,
-    require_bbox_area: bool,
-) -> tuple[bool, float, float, str]:
-    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-    sharpness = float(cv2.Laplacian(gray, cv2.CV_32F).var())
-    bright_ratio = float(np.mean(gray >= 245))
-
-    if sharpness < min_sharpness:
-        return False, sharpness, bright_ratio, f"blur ({sharpness:.1f} < {min_sharpness:.1f})"
-    if bright_ratio > max_bright_ratio:
-        return False, sharpness, bright_ratio, f"overexposed ({bright_ratio:.2f} > {max_bright_ratio:.2f})"
-    if require_bbox_area and bbox_area < min_capture_bbox_area:
-        return False, sharpness, bright_ratio, f"small_bbox ({bbox_area:.4f} < {min_capture_bbox_area:.4f})"
-    return True, sharpness, bright_ratio, ""
-
-
 def build_operator_hints(
     *,
     detector_enabled: bool,
@@ -194,9 +148,7 @@ def build_operator_hints(
     bbox_area: float,
     bbox_norm: tuple[float, float, float, float],
     frame_bgr: np.ndarray,
-    crop_bgr: np.ndarray | None,
     min_capture_bbox_area: float,
-    min_sharpness: float,
 ) -> list[str]:
     hints: list[str] = []
 
@@ -221,12 +173,6 @@ def build_operator_hints(
             if aspect < 0.55 or aspect > 1.8:
                 hints.append("поверните руку фронтально")
 
-            if crop_bgr is not None:
-                crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-                sharpness_preview = float(cv2.Laplacian(crop_gray, cv2.CV_32F).var())
-                if sharpness_preview < (min_sharpness * 0.75):
-                    hints.append("стабилизируйте руку")
-
     if not hints:
         return ["ок"]
     return list(dict.fromkeys(hints))
@@ -238,34 +184,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session-id", default="", help="ID сессии (по умолчанию авто session_YYYYMMDD...)")
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--camera-id", type=int, default=0)
-    parser.add_argument("--interval-ms", type=int, default=500)
+    parser.add_argument("--interval-ms", type=int, default=1000, help="Интервал авто-попыток сохранения")
     parser.add_argument("--auto", action="store_true", help="Автосохранение по таймеру")
     parser.add_argument("--mirror", action="store_true", help="Зеркалить кадры (preview + сохранение)")
     parser.add_argument("--config", default=str(BACKEND / "config.yaml"))
     parser.add_argument("--gallery", default=str(BACKEND / "gallery"))
-    parser.add_argument("--min-sharpness", type=float, default=45.0, help="Порог резкости (Laplacian var)")
-    parser.add_argument("--max-bright-ratio", type=float, default=0.35, help="Макс. доля пересвеченных пикселей")
     parser.add_argument("--min-capture-bbox-area", type=float, default=0.06, help="Мин. площадь bbox руки")
     parser.add_argument(
-        "--dedup-hamming-th",
+        "--min-save-interval-ms",
         type=int,
-        default=2,
-        help="Порог dHash для быстрого отсева почти идентичных кадров",
+        default=1000,
+        help="Минимальная пауза между сохранениями (manual + auto)",
     )
     parser.add_argument(
-        "--dedup-cosine-th",
+        "--min-frame-delta",
         type=float,
-        default=0.995,
-        help="Основной порог дедупа по DINOv2 cosine (высокий = меньше агрессии)",
+        default=8.0,
+        help="Мин. изменение кадра (mean abs gray diff) для сохранения",
     )
     parser.add_argument(
-        "--dedup-cosine-margin",
+        "--min-bbox-delta",
         type=float,
-        default=0.004,
-        help="Ширина пограничной зоны для SSIM tie-break",
+        default=0.015,
+        help="Мин. изменение площади bbox для режима с рукой",
     )
-    parser.add_argument("--dedup-ssim-th", type=float, default=0.985, help="Порог SSIM дедупликации")
-    parser.add_argument("--dedup-ref-limit", type=int, default=80, help="Сколько последних кадров сравнивать")
     return parser.parse_args()
 
 
@@ -308,129 +250,67 @@ def main() -> int:
 
     auto_mode = args.auto
     last_save_ms = 0
+    last_auto_attempt_ms = 0
     saved = 0
-    dedup_hashes: list[int] = []
-    dedup_embeddings: list[np.ndarray] = []
-    dedup_refs: list[np.ndarray] = []
-    dedup_ref_limit = max(1, int(args.dedup_ref_limit))
-    dedup_cosine_margin = max(0.0, float(args.dedup_cosine_margin))
-    dedup_embedder: DinoEmbedder | None = None
-    try:
-        dedup_embedder = DinoEmbedder(model_name=cfg.embedding_model, device=cfg.device)
-        print(f"[capture_gallery] DINO дедуп модель: {cfg.embedding_model} ({cfg.device})")
-    except Exception as exc:
-        print(
-            "[capture_gallery][warn] DINOv2 для дедупликации недоступен, "
-            f"использую fallback dHash+SSIM. Причина: {exc}"
-        )
+    last_saved_ref: np.ndarray | None = None
+    last_saved_bbox_area: float | None = None
+    min_save_interval_ms = max(0, int(args.min_save_interval_ms))
+    min_frame_delta = max(0.0, float(args.min_frame_delta))
+    min_bbox_delta = max(0.0, float(args.min_bbox_delta))
 
     print("[capture_gallery] Горячие клавиши: s=save, a=auto on/off, q=quit")
     print(f"[capture_gallery] Session: {session_id}")
     print(f"[capture_gallery] Output dir: {session_dir}")
     print(f"[capture_gallery] Mirror: {bool(args.mirror)}")
     print(
-        "[capture_gallery] QC: "
-        f"min_sharpness={args.min_sharpness}, "
-        f"max_bright_ratio={args.max_bright_ratio}, "
-        f"min_capture_bbox_area={min_capture_bbox_area:.4f}"
+        "[capture_gallery] Min dedup: "
+        f"min_save_interval_ms={min_save_interval_ms}, "
+        f"min_frame_delta={min_frame_delta:.2f}, "
+        f"min_bbox_delta={min_bbox_delta:.4f}"
     )
     print(
-        "[capture_gallery] Dedup: "
-        f"dHash<={args.dedup_hamming_th} -> "
-        f"DINOv2 cosine>={args.dedup_cosine_th:.4f} "
-        f"(margin={dedup_cosine_margin:.4f}) -> "
-        f"SSIM>={args.dedup_ssim_th:.4f} tie-break"
+        "[capture_gallery] Hint thresholds: "
+        f"min_capture_bbox_area={min_capture_bbox_area:.4f}"
     )
 
     def try_save(crop_bgr: np.ndarray | None, *, capture_mode: str, ts_ms: int, bbox_area: float) -> bool:
-        nonlocal saved, last_save_ms, dedup_embedder
+        nonlocal saved, last_save_ms, last_saved_ref, last_saved_bbox_area
 
         if crop_bgr is None:
             print(f"[capture_gallery] skip ({capture_mode}): no_crop")
             return False
 
-        ok, sharpness, bright_ratio, reason = quality_check(
-            crop_bgr,
-            min_sharpness=float(args.min_sharpness),
-            max_bright_ratio=float(args.max_bright_ratio),
-            bbox_area=float(bbox_area),
-            min_capture_bbox_area=min_capture_bbox_area,
-            require_bbox_area=(detector is not None),
-        )
-        if not ok:
-            print(f"[capture_gallery] skip ({capture_mode}): {reason}")
+        if (ts_ms - last_save_ms) < min_save_interval_ms:
+            wait_left = int(min_save_interval_ms - (ts_ms - last_save_ms))
+            print(f"[capture_gallery] skip ({capture_mode}): min_interval ({wait_left}ms left)")
             return False
 
-        # Русский комментарий: дедуп работает в 3 шага.
-        # 1) Быстрый фильтр dHash, 2) основной критерий DINOv2 cosine,
-        # 3) SSIM включается только в пограничной зоне около порога cosine.
-        current_hash = dhash(crop_bgr)
-        for prev_hash in dedup_hashes[-dedup_ref_limit:]:
-            dist = hamming_distance(current_hash, prev_hash)
-            if dist <= args.dedup_hamming_th:
-                print(f"[capture_gallery] skip ({capture_mode}): duplicate_dhash (distance={dist})")
-                return False
-
+        # Русский комментарий: минимальный дедуп.
+        # Сохраняем кадр только если прошло нужное время и поза/кадр изменились.
         current_ref = similarity_gray(crop_bgr)
-        cosine_max = -1.0
-        ssim_best = -1.0
-        dedup_strategy = "dhash+dino+ssim_tiebreak"
-        current_embedding: np.ndarray | None = None
+        frame_delta = -1.0
+        bbox_delta = -1.0
+        changed_by_frame = True
+        changed_by_bbox = True
 
-        recent_refs = dedup_refs[-dedup_ref_limit:]
-        recent_embeddings = dedup_embeddings[-dedup_ref_limit:]
+        if last_saved_ref is not None:
+            frame_delta = mean_abs_frame_delta(current_ref, last_saved_ref)
+            changed_by_frame = frame_delta >= min_frame_delta
 
-        if dedup_embedder is not None and recent_embeddings:
-            try:
-                crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-                current_embedding = dedup_embedder.embed_rgb(crop_rgb)[0].astype(np.float32)
+        if detector is not None:
+            if last_saved_bbox_area is None:
+                changed_by_bbox = True
+            else:
+                bbox_delta = abs(float(bbox_area) - float(last_saved_bbox_area))
+                changed_by_bbox = bbox_delta >= min_bbox_delta
 
-                best_idx = -1
-                for idx, prev_embedding in enumerate(recent_embeddings):
-                    score = cosine_similarity(current_embedding, prev_embedding)
-                    if score > cosine_max:
-                        cosine_max = score
-                        best_idx = idx
-
-                strict_cosine_th = float(args.dedup_cosine_th) + dedup_cosine_margin
-                if cosine_max >= strict_cosine_th:
-                    print(
-                        f"[capture_gallery] skip ({capture_mode}): "
-                        f"duplicate_dino_strict (cos={cosine_max:.4f})"
-                    )
-                    return False
-
-                if cosine_max >= float(args.dedup_cosine_th) and best_idx >= 0 and best_idx < len(recent_refs):
-                    ssim_best = ssim(current_ref, recent_refs[best_idx])
-                    if ssim_best >= args.dedup_ssim_th:
-                        print(
-                            f"[capture_gallery] skip ({capture_mode}): "
-                            f"duplicate_dino_ssim (cos={cosine_max:.4f}, ssim={ssim_best:.4f})"
-                        )
-                        return False
-            except Exception as exc:
-                dedup_embedder = None
-                dedup_strategy = "dhash+ssim_fallback"
-                print(
-                    "[capture_gallery][warn] DINO-дедуп отключен во время съёмки, "
-                    f"перехожу на fallback dHash+SSIM. Причина: {exc}"
-                )
-                for prev_ref in recent_refs:
-                    score = ssim(current_ref, prev_ref)
-                    if score > ssim_best:
-                        ssim_best = score
-                    if score >= args.dedup_ssim_th:
-                        print(f"[capture_gallery] skip ({capture_mode}): duplicate_ssim (score={score:.4f})")
-                        return False
-        elif recent_refs:
-            dedup_strategy = "dhash+ssim_fallback"
-            for prev_ref in recent_refs:
-                score = ssim(current_ref, prev_ref)
-                if score > ssim_best:
-                    ssim_best = score
-                if score >= args.dedup_ssim_th:
-                    print(f"[capture_gallery] skip ({capture_mode}): duplicate_ssim (score={score:.4f})")
-                    return False
+        pose_changed = changed_by_frame or changed_by_bbox
+        if not pose_changed:
+            print(
+                f"[capture_gallery] skip ({capture_mode}): no_pose_change "
+                f"(frame_delta={frame_delta:.3f}, bbox_delta={bbox_delta:.5f})"
+            )
+            return False
 
         saved += 1
         now_utc = datetime.now(timezone.utc)
@@ -439,13 +319,11 @@ def main() -> int:
         cv2.imwrite(str(filename), crop_bgr)
         last_save_ms = ts_ms
 
-        dedup_hashes.append(current_hash)
-        if dedup_embedder is not None:
-            if current_embedding is None:
-                crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-                current_embedding = dedup_embedder.embed_rgb(crop_rgb)[0].astype(np.float32)
-            dedup_embeddings.append(current_embedding)
-        dedup_refs.append(current_ref)
+        sharpness, bright_ratio = compute_quality_metrics(crop_bgr)
+        last_saved_ref = current_ref
+        if detector is not None:
+            last_saved_bbox_area = float(bbox_area)
+        distance_bucket = distance_bucket_from_bbox(float(bbox_area))
 
         row = {
             "label": args.label,
@@ -457,11 +335,11 @@ def main() -> int:
             "bbox_area": round(float(bbox_area), 6),
             "sharpness": round(sharpness, 4),
             "bright_ratio": round(bright_ratio, 6),
+            "distance_bucket": distance_bucket,
             "mirror": bool(args.mirror),
-            "dhash": format(current_hash, "016x"),
-            "dino_cosine_max": round(cosine_max, 6) if cosine_max >= 0.0 else "",
-            "ssim_best": round(ssim_best, 6) if ssim_best >= 0.0 else "",
-            "dedup_strategy": dedup_strategy,
+            "frame_delta": round(frame_delta, 6) if frame_delta >= 0.0 else "",
+            "bbox_delta": round(bbox_delta, 6) if bbox_delta >= 0.0 else "",
+            "dedup_strategy": "min_interval+pose_change",
             "path": str(filename.resolve()),
         }
         append_manifest(manifest_jsonl, manifest_csv, row)
@@ -510,9 +388,7 @@ def main() -> int:
             bbox_area=bbox_area,
             bbox_norm=bbox_norm,
             frame_bgr=frame,
-            crop_bgr=crop,
             min_capture_bbox_area=min_capture_bbox_area,
-            min_sharpness=float(args.min_sharpness),
         )
         primary_hint = hints[0]
         text_items.append(
@@ -533,18 +409,28 @@ def main() -> int:
                 )
             )
 
+        distance_bucket = distance_bucket_from_bbox(float(bbox_area))
+        text_items.append(
+            (
+                f"дистанция={distance_bucket} interval={min_save_interval_ms}ms",
+                (12, 98 if len(hints) <= 1 else 142),
+                TEXT_WHITE,
+                20,
+            )
+        )
         text_items.append(
             (
                 f"буква={args.label} saved={saved}/{args.count} auto={auto_mode}",
-                (12, 98 if len(hints) <= 1 else 142),
+                (12, 124 if len(hints) <= 1 else 168),
                 TEXT_WHITE,
-                21,
+                20,
             )
         )
 
         frame = draw_text_items(frame, text_items)
 
-        if auto_mode and crop is not None and (ts_ms - last_save_ms) >= args.interval_ms:
+        if auto_mode and crop is not None and (ts_ms - last_auto_attempt_ms) >= args.interval_ms:
+            last_auto_attempt_ms = ts_ms
             try_save(crop, capture_mode="auto", ts_ms=ts_ms, bbox_area=bbox_area)
 
         cv2.imshow("capture_gallery", frame)
