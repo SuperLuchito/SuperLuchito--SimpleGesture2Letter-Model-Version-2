@@ -52,6 +52,14 @@ function drawVideoFrame(targetCtx, sourceVideo, width, height, mirror = false) {
   targetCtx.restore();
 }
 
+function applyMirrorStyles() {
+  const transform = MIRROR_STREAM ? 'scaleX(-1)' : 'none';
+  videoEl.style.transform = transform;
+  canvasEl.style.transform = transform;
+  videoEl.style.transformOrigin = 'center center';
+  canvasEl.style.transformOrigin = 'center center';
+}
+
 function wsUrl() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   return `${proto}://${location.host}/ws/stream`;
@@ -101,6 +109,7 @@ async function startCamera() {
 
   videoEl.srcObject = stream;
   await videoEl.play();
+  applyMirrorStyles();
 
   canvasEl.width = videoEl.videoWidth;
   canvasEl.height = videoEl.videoHeight;
@@ -222,7 +231,6 @@ function renderLoop() {
   if (!stream) return;
 
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-  drawVideoFrame(ctx, videoEl, canvasEl.width, canvasEl.height, MIRROR_STREAM);
 
   const stateFresh = Date.now() - lastStateAtMs < 800;
   if (stateFresh && latest && latest.hand_present && latest.bbox_norm) {
