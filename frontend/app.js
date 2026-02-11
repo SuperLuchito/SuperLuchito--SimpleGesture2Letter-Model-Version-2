@@ -21,6 +21,9 @@ const vlmLetterEl = document.getElementById('vlmLetter');
 const vlmConfEl = document.getElementById('vlmConf');
 const vlmReasonEl = document.getElementById('vlmReason');
 
+// Важно: датасет снят с зеркалом, поэтому live-кадр в распознавание тоже зеркалим.
+const MIRROR_STREAM = true;
+
 let stream = null;
 let ws = null;
 let sendTimer = null;
@@ -38,6 +41,16 @@ let stableVisibleLetter = 'NONE';
 
 const captureCanvas = document.createElement('canvas');
 const captureCtx = captureCanvas.getContext('2d');
+
+function drawVideoFrame(targetCtx, sourceVideo, width, height, mirror = false) {
+  targetCtx.save();
+  if (mirror) {
+    targetCtx.translate(width, 0);
+    targetCtx.scale(-1, 1);
+  }
+  targetCtx.drawImage(sourceVideo, 0, 0, width, height);
+  targetCtx.restore();
+}
 
 function wsUrl() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -187,7 +200,7 @@ function startSender() {
     if (awaitingServer) return;
 
     sendBusy = true;
-    captureCtx.drawImage(videoEl, 0, 0, captureCanvas.width, captureCanvas.height);
+    drawVideoFrame(captureCtx, videoEl, captureCanvas.width, captureCanvas.height, MIRROR_STREAM);
     captureCanvas.toBlob((blob) => {
       if (!blob || !ws || ws.readyState !== WebSocket.OPEN) {
         sendBusy = false;
@@ -209,7 +222,7 @@ function renderLoop() {
   if (!stream) return;
 
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-  ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
+  drawVideoFrame(ctx, videoEl, canvasEl.width, canvasEl.height, MIRROR_STREAM);
 
   const stateFresh = Date.now() - lastStateAtMs < 800;
   if (stateFresh && latest && latest.hand_present && latest.bbox_norm) {
