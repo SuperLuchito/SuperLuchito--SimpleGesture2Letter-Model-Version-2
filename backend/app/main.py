@@ -76,6 +76,9 @@ class RuntimeContext:
                     mask_dilate_ratio=cfg.hand_mask_dilate_ratio,
                     mask_blur_sigma=cfg.hand_mask_blur_sigma,
                     max_num_hands=cfg.max_num_hands,
+                    min_detection_confidence=cfg.hand_min_detection_confidence,
+                    min_presence_confidence=cfg.hand_min_presence_confidence,
+                    min_tracking_confidence=cfg.hand_min_tracking_confidence,
                 )
                 self.errors.pop("hand_detector", None)
             except Exception as exc:

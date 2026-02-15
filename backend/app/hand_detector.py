@@ -39,6 +39,9 @@ class HandDetector:
         mask_dilate_ratio: float = 0.08,
         mask_blur_sigma: float = 3.0,
         max_num_hands: int = 1,
+        min_detection_confidence: float = 0.55,
+        min_presence_confidence: float = 0.55,
+        min_tracking_confidence: float = 0.55,
     ) -> None:
         self.model_path = Path(model_path)
         self.min_bbox_area = min_bbox_area
@@ -50,6 +53,9 @@ class HandDetector:
         self.mask_dilate_ratio = float(max(0.0, mask_dilate_ratio))
         self.mask_blur_sigma = float(max(0.0, mask_blur_sigma))
         self.max_num_hands = max_num_hands
+        self.min_detection_confidence = float(np.clip(min_detection_confidence, 0.0, 1.0))
+        self.min_presence_confidence = float(np.clip(min_presence_confidence, 0.0, 1.0))
+        self.min_tracking_confidence = float(np.clip(min_tracking_confidence, 0.0, 1.0))
 
         self.mp = None
         self.landmarker = None
@@ -74,9 +80,9 @@ class HandDetector:
             base_options=base_options,
             running_mode=vision.RunningMode.VIDEO,
             num_hands=self.max_num_hands,
-            min_hand_detection_confidence=0.5,
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
+            min_hand_detection_confidence=self.min_detection_confidence,
+            min_hand_presence_confidence=self.min_presence_confidence,
+            min_tracking_confidence=self.min_tracking_confidence,
         )
         self.landmarker = vision.HandLandmarker.create_from_options(options)
         self.mp = mp

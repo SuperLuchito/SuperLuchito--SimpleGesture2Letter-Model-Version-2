@@ -188,6 +188,7 @@ enable_vlm_judge: false
 - `hand_bbox_padding`, `hand_focus_ratio`, `hand_wrist_extension_ratio`
 - `hand_bg_suppression`, `hand_bg_darken_factor`
 - `hand_mask_dilate_ratio`, `hand_mask_blur_sigma`
+- `hand_min_detection_confidence`, `hand_min_presence_confidence`, `hand_min_tracking_confidence`
 
 ## Почему качество может расти/падать
 

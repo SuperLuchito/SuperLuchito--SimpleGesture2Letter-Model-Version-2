@@ -42,6 +42,9 @@ class AppConfig:
     hand_mask_dilate_ratio: float = 0.08
     hand_mask_blur_sigma: float = 3.0
     max_num_hands: int = 1
+    hand_min_detection_confidence: float = 0.55
+    hand_min_presence_confidence: float = 0.55
+    hand_min_tracking_confidence: float = 0.55
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AppConfig":

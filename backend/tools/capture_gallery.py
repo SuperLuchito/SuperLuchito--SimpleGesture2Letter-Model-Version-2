@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 import time
 from datetime import datetime, timezone
@@ -185,6 +186,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--camera-id", type=int, default=0)
     parser.add_argument("--interval-ms", type=int, default=1000, help="Интервал авто-попыток сохранения")
+    parser.add_argument(
+        "--auto-delay-ms",
+        type=int,
+        default=10000,
+        help="Задержка перед первым автоснимком (например 10000 = 10 секунд)",
+    )
     parser.add_argument("--auto", action="store_true", help="Автосохранение по таймеру")
     parser.add_argument("--mirror", action="store_true", help="Зеркалить кадры (preview + сохранение)")
     parser.add_argument("--config", default=str(BACKEND / "config.yaml"))
@@ -250,7 +257,7 @@ def main() -> int:
 
     auto_mode = args.auto
     last_save_ms = 0
-    last_auto_attempt_ms = 0
+    next_auto_due_ms: int | None = None
     saved = 0
     last_saved_ref: np.ndarray | None = None
     last_saved_bbox_area: float | None = None
@@ -271,6 +278,10 @@ def main() -> int:
     print(
         "[capture_gallery] Hint thresholds: "
         f"min_capture_bbox_area={min_capture_bbox_area:.4f}"
+    )
+    print(
+        "[capture_gallery] Auto timer: "
+        f"interval_ms={int(args.interval_ms)}, auto_delay_ms={int(max(0, args.auto_delay_ms))}"
     )
 
     def try_save(crop_bgr: np.ndarray | None, *, capture_mode: str, ts_ms: int, bbox_area: float) -> bool:
@@ -354,6 +365,9 @@ def main() -> int:
             frame = cv2.flip(frame, 1)
 
         ts_ms = int(time.monotonic() * 1000)
+        if auto_mode and next_auto_due_ms is None:
+            next_auto_due_ms = ts_ms + max(0, int(args.auto_delay_ms))
+
         crop = None
         bbox_area = 0.0
         bbox_norm = (0.0, 0.0, 0.0, 0.0)
@@ -418,10 +432,21 @@ def main() -> int:
                 20,
             )
         )
+        if auto_mode and next_auto_due_ms is not None:
+            auto_left_ms = max(0, int(next_auto_due_ms - ts_ms))
+            auto_left_s = int(math.ceil(auto_left_ms / 1000.0))
+            text_items.append(
+                (
+                    f"автоснимок через {auto_left_s} c",
+                    (12, 124 if len(hints) <= 1 else 168),
+                    TEXT_WARN if auto_left_s <= 3 else TEXT_WHITE,
+                    20,
+                )
+            )
         text_items.append(
             (
                 f"буква={args.label} saved={saved}/{args.count} auto={auto_mode}",
-                (12, 124 if len(hints) <= 1 else 168),
+                (12, 150 if len(hints) <= 1 else 194),
                 TEXT_WHITE,
                 20,
             )
@@ -429,9 +454,12 @@ def main() -> int:
 
         frame = draw_text_items(frame, text_items)
 
-        if auto_mode and crop is not None and (ts_ms - last_auto_attempt_ms) >= args.interval_ms:
-            last_auto_attempt_ms = ts_ms
-            try_save(crop, capture_mode="auto", ts_ms=ts_ms, bbox_area=bbox_area)
+        if auto_mode and crop is not None and next_auto_due_ms is not None and ts_ms >= next_auto_due_ms:
+            saved_now = try_save(crop, capture_mode="auto", ts_ms=ts_ms, bbox_area=bbox_area)
+            # Таймер сдвигаем всегда, чтобы не зациклиться на кадре в ту же миллисекунду.
+            # При неуспешном сохранении пробуем снова на следующем интервале.
+            _ = saved_now
+            next_auto_due_ms = ts_ms + max(1, int(args.interval_ms))
 
         cv2.imshow("capture_gallery", frame)
         key = cv2.waitKey(1) & 0xFF
@@ -440,6 +468,10 @@ def main() -> int:
             break
         if key == ord("a"):
             auto_mode = not auto_mode
+            if auto_mode:
+                next_auto_due_ms = ts_ms + max(0, int(args.auto_delay_ms))
+            else:
+                next_auto_due_ms = None
         if key == ord("s") and crop is not None:
             try_save(crop, capture_mode="manual", ts_ms=ts_ms, bbox_area=bbox_area)
 
