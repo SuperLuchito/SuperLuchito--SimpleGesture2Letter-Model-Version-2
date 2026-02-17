@@ -21,6 +21,9 @@ const vlmLetterEl = document.getElementById('vlmLetter');
 const vlmConfEl = document.getElementById('vlmConf');
 const vlmReasonEl = document.getElementById('vlmReason');
 
+// Важно: датасет снят с зеркалом, поэтому live-кадр в распознавание тоже зеркалим.
+const MIRROR_STREAM = true;
+
 let stream = null;
 let ws = null;
 let sendTimer = null;
@@ -38,6 +41,24 @@ let stableVisibleLetter = 'NONE';
 
 const captureCanvas = document.createElement('canvas');
 const captureCtx = captureCanvas.getContext('2d');
+
+function drawVideoFrame(targetCtx, sourceVideo, width, height, mirror = false) {
+  targetCtx.save();
+  if (mirror) {
+    targetCtx.translate(width, 0);
+    targetCtx.scale(-1, 1);
+  }
+  targetCtx.drawImage(sourceVideo, 0, 0, width, height);
+  targetCtx.restore();
+}
+
+function applyMirrorStyles() {
+  const transform = MIRROR_STREAM ? 'scaleX(-1)' : 'none';
+  videoEl.style.transform = transform;
+  canvasEl.style.transform = transform;
+  videoEl.style.transformOrigin = 'center center';
+  canvasEl.style.transformOrigin = 'center center';
+}
 
 function wsUrl() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -88,6 +109,7 @@ async function startCamera() {
 
   videoEl.srcObject = stream;
   await videoEl.play();
+  applyMirrorStyles();
 
   canvasEl.width = videoEl.videoWidth;
   canvasEl.height = videoEl.videoHeight;
@@ -187,7 +209,7 @@ function startSender() {
     if (awaitingServer) return;
 
     sendBusy = true;
-    captureCtx.drawImage(videoEl, 0, 0, captureCanvas.width, captureCanvas.height);
+    drawVideoFrame(captureCtx, videoEl, captureCanvas.width, captureCanvas.height, MIRROR_STREAM);
     captureCanvas.toBlob((blob) => {
       if (!blob || !ws || ws.readyState !== WebSocket.OPEN) {
         sendBusy = false;
@@ -209,7 +231,6 @@ function renderLoop() {
   if (!stream) return;
 
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-  ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
 
   const stateFresh = Date.now() - lastStateAtMs < 800;
   if (stateFresh && latest && latest.hand_present && latest.bbox_norm) {

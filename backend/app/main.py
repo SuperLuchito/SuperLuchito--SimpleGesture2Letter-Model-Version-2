@@ -70,11 +70,15 @@ class RuntimeContext:
                     min_bbox_area=cfg.min_bbox_area,
                     bbox_padding=cfg.hand_bbox_padding,
                     focus_ratio=cfg.hand_focus_ratio,
+                    wrist_extension_ratio=cfg.hand_wrist_extension_ratio,
                     bg_suppression=cfg.hand_bg_suppression,
                     bg_darken_factor=cfg.hand_bg_darken_factor,
                     mask_dilate_ratio=cfg.hand_mask_dilate_ratio,
                     mask_blur_sigma=cfg.hand_mask_blur_sigma,
                     max_num_hands=cfg.max_num_hands,
+                    min_detection_confidence=cfg.hand_min_detection_confidence,
+                    min_presence_confidence=cfg.hand_min_presence_confidence,
+                    min_tracking_confidence=cfg.hand_min_tracking_confidence,
                 )
                 self.errors.pop("hand_detector", None)
             except Exception as exc:
@@ -632,10 +636,13 @@ def api_gallery() -> JSONResponse:
 
     for label_dir in sorted(p for p in GALLERY_DIR.iterdir() if p.is_dir()):
         urls = []
-        for img in sorted(label_dir.iterdir()):
+        for img in sorted(label_dir.rglob("*")):
+            if not img.is_file():
+                continue
             if img.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
                 continue
-            urls.append(f"/gallery_files/{label_dir.name}/{img.name}")
+            rel_path = img.relative_to(GALLERY_DIR).as_posix()
+            urls.append(f"/gallery_files/{rel_path}")
         payload[label_dir.name] = urls
     return JSONResponse(payload)
 
@@ -650,16 +657,42 @@ def gallery_inspector() -> HTMLResponse:
   <title>Gallery Inspector</title>
   <style>
     body { font-family: sans-serif; padding: 16px; background: #101318; color: #f3f5f7; }
+    .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      text-decoration: none;
+      color: #eaf2f8;
+      background: #27303d;
+      border: 1px solid #41506a;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-weight: 600;
+    }
+    .back-btn:hover { background: #2f3b4b; }
     .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
     .tile { background: #1c2129; border-radius: 10px; padding: 8px; }
     img { width: 100%; border-radius: 6px; display: block; }
+    h1 { margin: 0; }
     h2 { margin-top: 24px; }
   </style>
 </head>
 <body>
-  <h1>Эталоны галереи</h1>
+  <div class=\"topbar\">
+    <a class=\"back-btn\" href=\"/\" id=\"backBtn\">← Назад</a>
+    <h1>Эталоны галереи</h1>
+  </div>
   <div id=\"content\"></div>
   <script>
+    document.getElementById('backBtn').addEventListener('click', (event) => {
+      event.preventDefault();
+      if (window.history.length > 1) {
+        window.history.back();
+      } else {
+        window.location.href = '/';
+      }
+    });
+
     async function run() {
       const res = await fetch('/api/gallery');
       const data = await res.json();

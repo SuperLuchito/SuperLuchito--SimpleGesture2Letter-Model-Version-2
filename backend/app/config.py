@@ -34,13 +34,17 @@ class AppConfig:
     switch_min_frames: int = 3
     vlm_min_interval_ms: int = 1800
     hand_landmarker_model_path: str = "backend/artifacts/models/hand_landmarker.task"
-    hand_bbox_padding: float = 0.15
-    hand_focus_ratio: float = 0.92
+    hand_bbox_padding: float = 0.2
+    hand_focus_ratio: float = 1.0
+    hand_wrist_extension_ratio: float = 0.18
     hand_bg_suppression: bool = True
     hand_bg_darken_factor: float = 0.45
     hand_mask_dilate_ratio: float = 0.08
     hand_mask_blur_sigma: float = 3.0
     max_num_hands: int = 1
+    hand_min_detection_confidence: float = 0.55
+    hand_min_presence_confidence: float = 0.55
+    hand_min_tracking_confidence: float = 0.55
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AppConfig":

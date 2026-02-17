@@ -24,6 +24,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gallery", default=str(BACKEND / "gallery"))
     parser.add_argument("--artifacts", default=str(BACKEND / "artifacts"))
     parser.add_argument("--none-label", default="_none")
+    parser.add_argument(
+        "--apply-all",
+        action="store_true",
+        help="Записать в config.yaml не только sim_none, но и sim_vlm_th + margin_th",
+    )
     return parser.parse_args()
 
 
@@ -47,7 +52,7 @@ def main() -> int:
         print(f"[calibrate] Директория с NONE-кадрами не найдена: {none_dir}")
         return 1
 
-    images = [p for p in sorted(none_dir.iterdir()) if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}]
+    images = [p for p in sorted(none_dir.rglob("*")) if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}]
     if not images:
         print("[calibrate] Нет кадров в _none")
         return 1
@@ -80,16 +85,28 @@ def main() -> int:
     # Keep a conservative upper bound; p99 can be too strict on small/noisy NONE sets.
     sim_none_recommended = float(np.clip(sim_none_p95, 0.45, 0.65))
     rec_sim_vlm = float(min(0.95, sim_none_recommended + 0.12))
-    rec_margin = float(np.percentile(np.asarray(margins), 75)) if margins else cfg.margin_th
+    rec_margin = float(max(0.0, np.percentile(np.asarray(margins), 75))) if margins else cfg.margin_th
 
-    merge_config_values(args.config, {"sim_none": round(sim_none_recommended, 4)})
+    if args.apply_all:
+        updates = {
+            "sim_none": round(sim_none_recommended, 4),
+            "sim_vlm_th": round(rec_sim_vlm, 4),
+            "margin_th": round(rec_margin, 4),
+        }
+        merge_config_values(args.config, updates)
+        print("[calibrate] Обновлено в config.yaml:")
+        print(f"  sim_none = {sim_none_recommended:.4f} (bounded p95)")
+        print(f"  sim_vlm_th = {rec_sim_vlm:.4f}")
+        print(f"  margin_th = {rec_margin:.4f}")
+    else:
+        merge_config_values(args.config, {"sim_none": round(sim_none_recommended, 4)})
+        print("[calibrate] Обновлено в config.yaml:")
+        print(f"  sim_none = {sim_none_recommended:.4f} (bounded p95)")
+        print("[calibrate] Рекомендации (не перезаписаны автоматически):")
+        print(f"  sim_vlm_th ~= {rec_sim_vlm:.4f}")
+        print(f"  margin_th ~= {rec_margin:.4f}")
 
-    print("[calibrate] Обновлено в config.yaml:")
-    print(f"  sim_none = {sim_none_recommended:.4f} (bounded p95)")
     print(f"  reference p95={sim_none_p95:.4f}, p99={sim_none_p99:.4f}")
-    print("[calibrate] Рекомендации (не перезаписаны автоматически):")
-    print(f"  sim_vlm_th ~= {rec_sim_vlm:.4f}")
-    print(f"  margin_th ~= {rec_margin:.4f}")
 
     return 0
 
