@@ -22,6 +22,12 @@ backend/data/slovo/
   landmarks/
 ```
 
+Либо автоматически распакуйте архив и соберите split:
+
+```bash
+./backend/scripts/finalize_slovo_dataset.sh
+```
+
 ## 2) Построение split без утечки signer
 
 Используйте Group split по `user_id`/`signer_id`:

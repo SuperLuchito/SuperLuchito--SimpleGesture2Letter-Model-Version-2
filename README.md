@@ -231,6 +231,12 @@ python backend/scripts/export_slovo_labels.py \
   --out backend/artifacts/labels.txt
 ```
 
+После загрузки `slovo.zip` можно одним запуском распаковать и собрать split:
+
+```bash
+./backend/scripts/finalize_slovo_dataset.sh
+```
+
 Групповой split без утечки signer:
 
 ```bash
