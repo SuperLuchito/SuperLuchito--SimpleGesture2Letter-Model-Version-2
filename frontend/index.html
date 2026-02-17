@@ -13,9 +13,9 @@
     <header class="topbar module reveal reveal-1">
       <div>
         <p class="eyebrow">RSL DACTYL | REAL-TIME MVP</p>
-        <h1>Распознавание статических букв РЖЯ</h1>
+        <h1>Распознавание РЖЯ: буквы и слова</h1>
       </div>
-      <p class="top-note">FastAPI + MediaPipe + DINOv2 + FAISS (VLM optional)</p>
+      <p class="top-note">FastAPI + WebSocket | letters(DINOv2+FAISS) / words(ONNX sliding window)</p>
     </header>
 
     <main class="workspace">
@@ -30,7 +30,7 @@
               <strong id="status">NONE</strong>
             </div>
             <div class="chip">
-              <span>Буква</span>
+              <span id="tokenLabel">Буква</span>
               <strong id="letter">NONE</strong>
             </div>
           </div>

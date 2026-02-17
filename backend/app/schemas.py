@@ -55,12 +55,21 @@ def build_inference_message(
     margin: float,
     uncertain: bool,
     cooldown_left_ms: int,
+    mode: str = "letters",
+    word: str | None = None,
+    hold_unit: str = "ms",
+    latency_ms: float | None = None,
+    fp_per_minute: float | None = None,
+    avg_infer_latency_ms: float | None = None,
+    p95_infer_latency_ms: float | None = None,
 ) -> dict[str, Any]:
     remaining = max(0, hold_target_ms - hold_elapsed_ms)
     progress = min(1.0, hold_elapsed_ms / hold_target_ms) if hold_target_ms > 0 else 0.0
     return {
+        "mode": mode,
         "status": status,
         "letter": letter,
+        "word": word if word is not None else letter,
         "score": float(score),
         "confidence": float(confidence),
         "hand_present": hand_present,
@@ -70,6 +79,7 @@ def build_inference_message(
             "remaining_ms": int(remaining),
             "target_ms": int(hold_target_ms),
             "progress": float(progress),
+            "unit": hold_unit,
         },
         "text_state": {
             "value": text_value,
@@ -83,5 +93,9 @@ def build_inference_message(
             "margin": float(margin),
             "uncertain": uncertain,
             "cooldown_left_ms": int(cooldown_left_ms),
+            "latency_ms": float(latency_ms) if latency_ms is not None else None,
+            "fp_per_minute": float(fp_per_minute) if fp_per_minute is not None else None,
+            "avg_infer_latency_ms": float(avg_infer_latency_ms) if avg_infer_latency_ms is not None else None,
+            "p95_infer_latency_ms": float(p95_infer_latency_ms) if p95_infer_latency_ms is not None else None,
         },
     }

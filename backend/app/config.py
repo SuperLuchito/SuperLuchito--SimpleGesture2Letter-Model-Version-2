@@ -9,6 +9,7 @@ import yaml
 
 @dataclass
 class AppConfig:
+    recognition_mode: str = "letters"
     frontend_fps: int = 12
     jpeg_quality: float = 0.75
     hold_ms: int = 700
@@ -45,12 +46,100 @@ class AppConfig:
     hand_min_detection_confidence: float = 0.55
     hand_min_presence_confidence: float = 0.55
     hand_min_tracking_confidence: float = 0.55
+    word_model_path: str = "backend/artifacts/slovo_word_model.onnx"
+    word_labels_path: str = "backend/artifacts/labels.txt"
+    word_input_size: int = 224
+    word_window_frames: int = 32
+    word_frame_interval: int = 2
+    word_step: int = 4
+    word_topk: int = 5
+    word_no_event_label: str = "no_event"
+    word_th_no_event: float = 0.60
+    word_th_unknown: float = 0.55
+    word_th_margin: float = 0.10
+    word_ema_alpha: float = 0.3
+    word_hold_frames: int = 6
+    word_cooldown_frames: int = 10
+    word_dedup_same_word: bool = True
+    word_max_fps_inference: float = 0.0
+    word_ort_num_threads: int = 1
+    word_runtime_log_enabled: bool = True
+    word_runtime_log_path: str = "backend/artifacts/words_runtime.jsonl"
+
+    @staticmethod
+    def _merge_nested_overrides(raw: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(raw)
+
+        sections: list[tuple[str, dict[str, str]]] = [
+            (
+                "word_model",
+                {
+                    "path": "word_model_path",
+                    "labels_path": "word_labels_path",
+                    "input_size": "word_input_size",
+                    "window_frames": "word_window_frames",
+                    "frame_interval": "word_frame_interval",
+                    "step": "word_step",
+                    "topk": "word_topk",
+                },
+            ),
+            (
+                "thresholds",
+                {
+                    "no_event_label": "word_no_event_label",
+                    "th_no_event": "word_th_no_event",
+                    "th_unknown": "word_th_unknown",
+                    "th_margin": "word_th_margin",
+                },
+            ),
+            (
+                "smoothing",
+                {
+                    "ema_alpha": "word_ema_alpha",
+                },
+            ),
+            (
+                "commit_logic",
+                {
+                    "hold_frames": "word_hold_frames",
+                    "cooldown_frames": "word_cooldown_frames",
+                    "dedup_same_word": "word_dedup_same_word",
+                },
+            ),
+            (
+                "performance",
+                {
+                    "max_fps_inference": "word_max_fps_inference",
+                    "ort_num_threads": "word_ort_num_threads",
+                },
+            ),
+            (
+                "runtime_log",
+                {
+                    "enabled": "word_runtime_log_enabled",
+                    "path": "word_runtime_log_path",
+                },
+            ),
+        ]
+
+        for section_name, mapping in sections:
+            section = raw.get(section_name)
+            if not isinstance(section, dict):
+                continue
+            for source_key, target_key in mapping.items():
+                if source_key in section:
+                    payload[target_key] = section[source_key]
+        return payload
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AppConfig":
+        raw = cls._merge_nested_overrides(raw)
         known = {f.name for f in fields(cls)}
         filtered = {k: v for k, v in raw.items() if k in known}
         cfg = cls(**filtered)
+        cfg.recognition_mode = str(cfg.recognition_mode).strip().lower() or "letters"
+        if cfg.recognition_mode not in {"letters", "words"}:
+            cfg.recognition_mode = "letters"
         cfg.letters_allowlist = cfg.letters_allowlist or []
         return cfg
 

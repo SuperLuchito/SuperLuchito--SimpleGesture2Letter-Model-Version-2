@@ -1,18 +1,25 @@
-# РЖЯ Dactyl MVP v1
+# РЖЯ Dactyl + Words MVP
 
-Первая стабильно рабочая версия локального MVP для распознавания статических букв дактиля РЖЯ в реальном времени с веб-камеры в браузере.
+Локальный MVP для распознавания:
 
-Ключевая идея: быстрый `retrieval` (MediaPipe + DINOv2 + FAISS) и опциональный VLM-судья через LM Studio для спорных случаев.
+- `letters` mode: статические буквы дактиля (MediaPipe + DINOv2 + FAISS),
+- `words` mode: isolated words по sliding-window ONNX классификатору.
 
 Важно: **рост качества распознавания напрямую зависит от качества и разнообразия вашего датасета эталонов**.
 
-## Текущий статус v1
+## Текущий статус
 
 - Стабильный режим: `retrieval-only` (VLM выключен по умолчанию).
 - `NONE` режим работает (нет руки/низкая уверенность).
 - `hold-to-commit` и `cooldown` работают.
 - UI показывает текущий статус, текущую букву, hold-прогресс, debug top-k.
 - Поддержан сбор эталонов, сборка индекса, калибровка порогов.
+- Добавлен `words` mode с:
+  - кольцевым буфером кадров,
+  - sliding-window inference (ONNX Runtime),
+  - EMA сглаживанием вероятностей,
+  - статусами `NONE | UNKNOWN | HOLD | COMMIT | COOLDOWN`,
+  - логированием latency и FP/minute.
 
 ## Стек
 
@@ -53,7 +60,7 @@ LICENSE
 ## Установка
 
 ```bash
-cd '/Users/luchito/Desktop/РЖЯ ТЕСТ#2'
+cd /path/to/SuperLuchito--SimpleGesture2Letter-Model-Version-2
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
@@ -162,6 +169,101 @@ KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 uvicorn app.main:app --host 127.0.0.
 - `http://127.0.0.1:8000/health`
 - `http://127.0.0.1:8000/gallery`
 
+## Words mode (Slovo / isolated words)
+
+### 1) Конфиг
+
+В `backend/config.yaml`:
+
+```yaml
+recognition_mode: words
+word_model:
+  path: backend/artifacts/slovo_word_model.onnx
+  labels_path: backend/artifacts/labels.txt
+  input_size: 224
+  window_frames: 32
+  frame_interval: 2
+  step: 4
+  topk: 5
+thresholds:
+  no_event_label: no_event
+  th_no_event: 0.60
+  th_unknown: 0.55
+  th_margin: 0.10
+smoothing:
+  ema_alpha: 0.3
+commit_logic:
+  hold_frames: 6
+  cooldown_frames: 10
+  dedup_same_word: true
+performance:
+  max_fps_inference: 0
+  ort_num_threads: 1
+runtime_log:
+  enabled: true
+  path: backend/artifacts/words_runtime.jsonl
+```
+
+### 2) Подготовка данных Slovo
+
+Инструкции:
+
+- `backend/scripts/download_slovo.md`
+
+Групповой split без утечки signer:
+
+```bash
+python backend/scripts/prepare_slovo_splits.py \
+  --annotations backend/data/slovo/annotations.csv \
+  --out backend/data/slovo/splits.json \
+  --val-ratio 0.2 \
+  --test-ratio 0.1 \
+  --seed 42
+```
+
+Опциональный subset слов:
+
+```bash
+python backend/scripts/build_subset.py \
+  --splits backend/data/slovo/splits.json \
+  --out-dir backend/data/slovo/subset_100 \
+  --top-k 100
+```
+
+### 3) ONNX модель
+
+Положите веса и labels:
+
+- `backend/artifacts/slovo_word_model.onnx`
+- `backend/artifacts/labels.txt`
+
+Если нужен экспорт ONNX:
+
+```bash
+python backend/train/export_onnx.py \
+  --labels backend/artifacts/labels.txt \
+  --out backend/artifacts/slovo_word_model.onnx \
+  --input-size 224 \
+  --window-frames 32
+```
+
+Скрипт `backend/train/export_onnx.py` в этом MVP является каркасом: если у вас уже есть baseline Slovo checkpoint, замените `DummyVideoModel` на конкретную архитектуру baseline перед экспортом.
+
+Примечание: preprocess в words mode сейчас `ImageNet normalize + resize(224)`; это рабочий дефолт, но его нужно сверить с baseline Slovo перед production.
+
+### 4) Проверка realtime логов
+
+```bash
+python backend/tools/eval_realtime_log.py --log backend/artifacts/words_runtime.jsonl
+```
+
+Метрики:
+
+- `fp_per_min` (для quiet-сценария, где ожидается NONE),
+- `infer_latency_avg_ms`,
+- `infer_latency_p95_ms`,
+- `commit_rate_per_min`.
+
 ## Работа с VLM (опционально)
 
 По умолчанию в `backend/config.yaml`:
@@ -182,6 +284,7 @@ enable_vlm_judge: false
 ## Ключевые параметры (`backend/config.yaml`)
 
 - `frontend_fps`, `jpeg_quality`
+- `recognition_mode`: `letters | words`
 - `hold_ms`, `cooldown_ms`
 - `sim_none`, `sim_vlm_th`, `margin_th`
 - `switch_min_frames`, `precommit_ratio`
@@ -189,6 +292,7 @@ enable_vlm_judge: false
 - `hand_bg_suppression`, `hand_bg_darken_factor`
 - `hand_mask_dilate_ratio`, `hand_mask_blur_sigma`
 - `hand_min_detection_confidence`, `hand_min_presence_confidence`, `hand_min_tracking_confidence`
+- `word_model.*`, `thresholds.*`, `smoothing.*`, `commit_logic.*`, `performance.*`, `runtime_log.*`
 
 ## Почему качество может расти/падать
 
@@ -227,6 +331,15 @@ KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 ...
 - Переснимите эталоны (больше и лучше).
 - Пересоберите индекс и перекалибруйте пороги.
 - Проверьте `sim_none` и `hand_*` параметры в `config.yaml`.
+
+Для `words` mode и снижения FP:
+
+- увеличьте `thresholds.th_no_event`;
+- увеличьте `thresholds.th_unknown`;
+- увеличьте `thresholds.th_margin`;
+- увеличьте `commit_logic.hold_frames`;
+- увеличьте `commit_logic.cooldown_frames`;
+- уменьшите `performance.max_fps_inference` (или увеличьте `word_model.step`) для CPU.
 
 ### Кроп обрезает ладонь/кисть
 

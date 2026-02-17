@@ -1,3 +1,4 @@
+recognition_mode: letters
 frontend_fps: 8
 jpeg_quality: 0.75
 hold_ms: 700
@@ -34,3 +35,28 @@ max_num_hands: 1
 hand_min_detection_confidence: 0.55
 hand_min_presence_confidence: 0.55
 hand_min_tracking_confidence: 0.55
+word_model:
+  path: backend/artifacts/slovo_word_model.onnx
+  labels_path: backend/artifacts/labels.txt
+  input_size: 224
+  window_frames: 32
+  frame_interval: 2
+  step: 4
+  topk: 5
+thresholds:
+  no_event_label: no_event
+  th_no_event: 0.6
+  th_unknown: 0.55
+  th_margin: 0.1
+smoothing:
+  ema_alpha: 0.3
+commit_logic:
+  hold_frames: 6
+  cooldown_frames: 10
+  dedup_same_word: true
+performance:
+  max_fps_inference: 0
+  ort_num_threads: 1
+runtime_log:
+  enabled: true
+  path: backend/artifacts/words_runtime.jsonl

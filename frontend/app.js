@@ -6,6 +6,7 @@ const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 
 const statusEl = document.getElementById('status');
+const tokenLabelEl = document.getElementById('tokenLabel');
 const letterEl = document.getElementById('letter');
 const scoreEl = document.getElementById('score');
 const confidenceEl = document.getElementById('confidence');
@@ -38,6 +39,7 @@ let lastStateAtMs = 0;
 let awaitingServer = false;
 let lastSendAtMs = 0;
 let stableVisibleLetter = 'NONE';
+let recognitionMode = 'letters';
 
 const captureCanvas = document.createElement('canvas');
 const captureCtx = captureCanvas.getContext('2d');
@@ -68,6 +70,18 @@ function wsUrl() {
 function setStatusClass(status) {
   statusEl.className = '';
   const normalized = String(status || '').toLowerCase();
+  if (normalized === 'hold') {
+    statusEl.classList.add('status-candidate');
+    return;
+  }
+  if (normalized === 'commit') {
+    statusEl.classList.add('status-committed');
+    return;
+  }
+  if (normalized === 'unknown') {
+    statusEl.classList.add('status-none');
+    return;
+  }
   statusEl.classList.add(`status-${normalized}`);
 }
 
@@ -91,6 +105,8 @@ async function fetchServerConfig() {
     if (data.config) {
       sendFps = Number(data.config.frontend_fps || 12);
       jpegQuality = Number(data.config.jpeg_quality || 0.75);
+      recognitionMode = String(data.config.recognition_mode || 'letters');
+      tokenLabelEl.textContent = recognitionMode === 'words' ? 'Слово' : 'Буква';
     }
   } catch (err) {
     console.warn('health config unavailable:', err);
@@ -161,6 +177,7 @@ function stopCamera() {
   awaitingServer = false;
   lastSendAtMs = 0;
   stableVisibleLetter = 'NONE';
+  recognitionMode = 'letters';
   statusEl.textContent = 'NONE';
   letterEl.textContent = 'NONE';
   textValueEl.textContent = 'NONE';
@@ -249,30 +266,46 @@ function renderLoop() {
 }
 
 function renderState(data) {
+  const mode = String(data.mode || recognitionMode || 'letters');
+  recognitionMode = mode;
+  tokenLabelEl.textContent = mode === 'words' ? 'Слово' : 'Буква';
+
   setStatusClass(data.status);
   statusEl.textContent = data.status;
-  const visibleLetter = pickVisibleLetter(data);
+  let visibleLetter = pickVisibleLetter(data);
+  if (mode === 'words') {
+    visibleLetter = String(data.word || data.top1?.label || data.letter || 'NONE');
+  }
   letterEl.textContent = visibleLetter;
   scoreEl.textContent = Number(data.score || 0).toFixed(3);
   confidenceEl.textContent = Number(data.confidence || 0).toFixed(3);
 
   const hold = data.hold || {};
-  holdEl.textContent = `${hold.elapsed_ms || 0} / ${hold.target_ms || 0} мс`;
-  remainEl.textContent = `${hold.remaining_ms || 0} мс`;
+  const holdUnit = String(hold.unit || 'ms');
+  const holdUnitLabel = holdUnit === 'frames' ? 'кадр.' : 'мс';
+  holdEl.textContent = `${hold.elapsed_ms || 0} / ${hold.target_ms || 0} ${holdUnitLabel}`;
+  remainEl.textContent = `${hold.remaining_ms || 0} ${holdUnitLabel}`;
   progressBar.style.width = `${Math.max(0, Math.min(100, (hold.progress || 0) * 100))}%`;
 
-  textValueEl.textContent = visibleLetter;
+  textValueEl.textContent = mode === 'words'
+    ? String(data.text_state?.value || visibleLetter || 'NONE')
+    : visibleLetter;
 
   const topk = Array.isArray(data.topk) ? data.topk : [];
   topkEl.innerHTML = '';
   for (const item of topk) {
     const li = document.createElement('li');
-    li.textContent = `${item.letter}: ${Number(item.score || 0).toFixed(3)}`;
+    const label = item.letter || item.label || 'NONE';
+    li.textContent = `${label}: ${Number(item.score || 0).toFixed(3)}`;
     topkEl.appendChild(li);
   }
 
   const dbg = data.debug || {};
-  debugEl.textContent = `sim1=${Number(dbg.sim1 || 0).toFixed(3)} | sim2=${Number(dbg.sim2 || 0).toFixed(3)} | margin=${Number(dbg.margin || 0).toFixed(3)} | uncertain=${Boolean(dbg.uncertain)} | cooldown=${dbg.cooldown_left_ms || 0}мс`;
+  const latency = dbg.latency_ms === null || dbg.latency_ms === undefined ? 'n/a' : Number(dbg.latency_ms).toFixed(1);
+  const fpMin = dbg.fp_per_minute === null || dbg.fp_per_minute === undefined ? 'n/a' : Number(dbg.fp_per_minute).toFixed(2);
+  const avgLat = dbg.avg_infer_latency_ms === null || dbg.avg_infer_latency_ms === undefined ? 'n/a' : Number(dbg.avg_infer_latency_ms).toFixed(1);
+  const p95Lat = dbg.p95_infer_latency_ms === null || dbg.p95_infer_latency_ms === undefined ? 'n/a' : Number(dbg.p95_infer_latency_ms).toFixed(1);
+  debugEl.textContent = `sim1=${Number(dbg.sim1 || 0).toFixed(3)} | sim2=${Number(dbg.sim2 || 0).toFixed(3)} | margin=${Number(dbg.margin || 0).toFixed(3)} | uncertain=${Boolean(dbg.uncertain)} | cooldown=${dbg.cooldown_left_ms || 0}${holdUnit === 'frames' ? 'fr' : 'мс'} | latency=${latency}ms | fp/min=${fpMin} | avg=${avgLat}ms p95=${p95Lat}ms`;
 
   const vlm = data.vlm || {};
   vlmUsedEl.textContent = String(Boolean(vlm.used));

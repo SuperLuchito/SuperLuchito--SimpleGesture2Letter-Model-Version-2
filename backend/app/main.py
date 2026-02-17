@@ -26,6 +26,9 @@ from .retrieval import GalleryIndex, RetrievalHit
 from .schemas import TopKItem, VLMDecision, build_inference_message
 from .state_machine import HoldToCommitStateMachine
 from .vlm_judge import JudgeResult, VLMJudge
+from .words.model_onnx import WordOnnxModel
+from .words.service import WordRecognitionService, WordServiceConfig
+from .words.decoder import WordThresholds
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 BACKEND_DIR = ROOT_DIR / "backend"
@@ -47,6 +50,7 @@ class RuntimeContext:
         self._hand_detector: HandDetector | None = None
         self._embedder: DinoEmbedder | None = None
         self._gallery_index: GalleryIndex | None = None
+        self._word_model: WordOnnxModel | None = None
         self._vlm_judge: VLMJudge | None = None
         self._event_logger: UncertainEventLogger | None = None
 
@@ -130,6 +134,30 @@ class RuntimeContext:
                 return None
             return self._vlm_judge
 
+    def get_word_model(self) -> WordOnnxModel | None:
+        with self.lock:
+            if self._word_model is not None:
+                return self._word_model
+            try:
+                cfg = self.config
+                model_path = Path(cfg.word_model_path)
+                labels_path = Path(cfg.word_labels_path)
+                if not model_path.is_absolute():
+                    model_path = (ROOT_DIR / model_path).resolve()
+                if not labels_path.is_absolute():
+                    labels_path = (ROOT_DIR / labels_path).resolve()
+                self._word_model = WordOnnxModel(
+                    model_path=model_path,
+                    labels_path=labels_path,
+                    input_size=cfg.word_input_size,
+                    ort_num_threads=cfg.word_ort_num_threads,
+                )
+                self.errors.pop("word_model", None)
+            except Exception as exc:
+                self.errors["word_model"] = str(exc)
+                return None
+            return self._word_model
+
     def get_event_logger(self) -> UncertainEventLogger:
         with self.lock:
             if self._event_logger is None:
@@ -137,6 +165,18 @@ class RuntimeContext:
             return self._event_logger
 
     def allowed_labels(self) -> list[str]:
+        if self.config.recognition_mode == "words":
+            model = self.get_word_model()
+            if model is None:
+                return []
+            no_event_idx = model.find_no_event_index(self.config.word_no_event_label)
+            labels = []
+            for i, label in enumerate(model.labels):
+                if no_event_idx is not None and i == no_event_idx:
+                    continue
+                labels.append(label)
+            return sorted(labels)
+
         index = self.get_gallery_index()
         if index and index.metadata:
             return sorted({str(item.get("letter", "")) for item in index.metadata if item.get("letter")})
@@ -154,10 +194,23 @@ class RuntimeContext:
 
     def health(self) -> dict[str, Any]:
         cfg = self.config
-        hand_ready = self.get_hand_detector() is not None
-        embed_ready = self.get_embedder() is not None
-        idx = self.get_gallery_index()
-        index_loaded = idx is not None and idx.size > 0
+        if cfg.recognition_mode == "words":
+            hand_ready = True
+            embed_ready = False
+            idx = None
+            index_loaded = False
+            word_model = self.get_word_model()
+            word_model_ready = word_model is not None
+            index_size = len(word_model.labels) if word_model is not None else 0
+            ok = bool(word_model_ready)
+        else:
+            hand_ready = self.get_hand_detector() is not None
+            embed_ready = self.get_embedder() is not None
+            idx = self.get_gallery_index()
+            index_loaded = idx is not None and idx.size > 0
+            word_model_ready = False
+            index_size = idx.size if idx else 0
+            ok = hand_ready and embed_ready and index_loaded
 
         vlm_reachable = False
         vlm_message = "disabled"
@@ -166,12 +219,13 @@ class RuntimeContext:
             vlm_reachable, vlm_message = judge.health()
 
         return {
-            "ok": hand_ready and embed_ready and index_loaded,
+            "ok": ok,
             "config": cfg.to_dict(),
             "hand_detector_ready": hand_ready,
             "embedding_ready": embed_ready,
             "index_loaded": index_loaded,
-            "index_size": idx.size if idx else 0,
+            "index_size": index_size,
+            "word_model_ready": word_model_ready,
             "vlm_enabled": cfg.enable_vlm_judge,
             "vlm_reachable": vlm_reachable,
             "vlm_message": vlm_message,
@@ -184,6 +238,7 @@ class SessionProcessor:
     def __init__(self, runtime: RuntimeContext) -> None:
         self.runtime = runtime
         cfg = runtime.config
+        self.recognition_mode = str(cfg.recognition_mode).lower()
         self.state = HoldToCommitStateMachine(
             hold_ms=cfg.hold_ms,
             cooldown_ms=cfg.cooldown_ms,
@@ -191,6 +246,38 @@ class SessionProcessor:
             uncertain_streak_frames=cfg.uncertain_streak_frames,
             switch_min_frames=getattr(cfg, "switch_min_frames", 3),
         )
+        self.words_service: WordRecognitionService | None = None
+        self.words_init_error: str | None = None
+        if self.recognition_mode == "words":
+            model = runtime.get_word_model()
+            if model is None:
+                self.words_init_error = runtime.errors.get("word_model", "word model is unavailable")
+            else:
+                log_path = Path(cfg.word_runtime_log_path)
+                if not log_path.is_absolute():
+                    log_path = (ROOT_DIR / log_path).resolve()
+                self.words_service = WordRecognitionService(
+                    model=model,
+                    config=WordServiceConfig(
+                        window_frames=cfg.word_window_frames,
+                        frame_interval=cfg.word_frame_interval,
+                        step=cfg.word_step,
+                        topk=cfg.word_topk,
+                        max_fps_inference=cfg.word_max_fps_inference,
+                        no_event_label=cfg.word_no_event_label,
+                        ema_alpha=cfg.word_ema_alpha,
+                        hold_frames=cfg.word_hold_frames,
+                        cooldown_frames=cfg.word_cooldown_frames,
+                        dedup_same_word=cfg.word_dedup_same_word,
+                        thresholds=WordThresholds(
+                            th_no_event=cfg.word_th_no_event,
+                            th_unknown=cfg.word_th_unknown,
+                            th_margin=cfg.word_th_margin,
+                        ),
+                        log_enabled=cfg.word_runtime_log_enabled,
+                        log_path=log_path,
+                    ),
+                )
 
         self.cached_vlm_candidate_key: str | None = None
         self.cached_vlm_result: JudgeResult | None = None
@@ -203,6 +290,39 @@ class SessionProcessor:
         self.pending_vlm_context: dict[str, Any] | None = None
         self.pending_vlm_query_crop_bgr: np.ndarray | None = None
         self.pending_vlm_topk_items: list[TopKItem] = []
+
+    def clear_text(self) -> None:
+        self.state.clear_text()
+        if self.words_service is not None:
+            self.words_service.clear_text()
+
+    def _none_words_message(self, *, now_ms: int, error: str = "") -> dict[str, Any]:
+        return build_inference_message(
+            status="NONE",
+            letter="NONE",
+            word="NONE",
+            score=0.0,
+            confidence=0.0,
+            hand_present=False,
+            bbox_norm=[0.0, 0.0, 0.0, 0.0],
+            hold_elapsed_ms=0,
+            hold_target_ms=max(1, int(self.runtime.config.word_hold_frames)),
+            text_value="",
+            committed_now=False,
+            topk=[],
+            vlm=VLMDecision(),
+            sim1=0.0,
+            sim2=0.0,
+            margin=0.0,
+            uncertain=False,
+            cooldown_left_ms=0,
+            mode="words",
+            hold_unit="frames",
+            latency_ms=None,
+            fp_per_minute=None,
+            avg_infer_latency_ms=None,
+            p95_infer_latency_ms=None,
+        ) | {"timestamp_ms": int(now_ms), "error": error}
 
     def _none_message(self, *, detection: HandDetection, now_ms: int, topk_items: list[TopKItem] | None = None):
         return build_inference_message(
@@ -351,6 +471,13 @@ class SessionProcessor:
 
     def process_frame(self, frame_bgr: np.ndarray, now_ms: int) -> dict[str, Any]:
         cfg = self.runtime.config
+        if self.recognition_mode == "words":
+            if self.words_service is None:
+                return self._none_words_message(now_ms=now_ms, error=self.words_init_error or "words service unavailable")
+            try:
+                return self.words_service.update(frame_bgr, now_ms)
+            except Exception as exc:
+                return self._none_words_message(now_ms=now_ms, error=f"words inference error: {exc}")
 
         if cv2 is None:
             detection = HandDetection(False, (0.0, 0.0, 0.0, 0.0), (0, 0, 0, 0), None)
@@ -745,7 +872,7 @@ async def ws_stream(websocket: WebSocket) -> None:
                 continue
 
             if data.get("type") == "control" and data.get("action") == "clear_text":
-                session.state.clear_text()
+                session.clear_text()
                 await websocket.send_json({"type": "ack", "action": "clear_text"})
             continue
 
