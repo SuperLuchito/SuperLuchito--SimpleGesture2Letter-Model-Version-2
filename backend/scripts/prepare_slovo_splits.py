@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 
-PATH_KEYS = ("video_path", "path", "filepath", "sample_path", "video", "video_file")
-LABEL_KEYS = ("label", "word", "gloss", "class", "class_name")
+PATH_KEYS = ("video_path", "path", "filepath", "sample_path", "video", "video_file", "attachment_id")
+LABEL_KEYS = ("label", "word", "gloss", "class", "class_name", "text")
 SIGNER_KEYS = ("user_id", "signer_id", "signer", "person_id", "subject_id")
 
 
@@ -23,6 +23,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--path-key", default="")
+    parser.add_argument("--path-prefix", default="", help="Optional prefix added to each sample path")
+    parser.add_argument("--path-suffix", default="", help="Optional suffix added to each sample path")
     parser.add_argument("--label-key", default="")
     parser.add_argument("--signer-key", default="")
     return parser.parse_args()
@@ -109,8 +111,17 @@ def main() -> int:
     test_items: list[dict[str, str]] = []
 
     for row in rows:
+        raw_path = str(row.get(path_key, "")).strip()
+        if not raw_path:
+            continue
+        if path_key == "attachment_id" and "." not in raw_path and not str(args.path_suffix).strip():
+            raw_path = f"{raw_path}.mp4"
+        if str(args.path_suffix).strip():
+            raw_path = f"{raw_path}{args.path_suffix}"
+        if str(args.path_prefix).strip():
+            raw_path = str(Path(args.path_prefix) / raw_path)
         item = {
-            "path": str(row.get(path_key, "")).strip(),
+            "path": raw_path,
             "label": str(row.get(label_key, "")).strip(),
             "signer_id": str(row.get(signer_key, "")).strip() or "_unknown_signer",
         }
@@ -142,6 +153,8 @@ def main() -> int:
         "meta": {
             "annotations": str(ann_path),
             "path_key": path_key,
+            "path_prefix": str(args.path_prefix),
+            "path_suffix": str(args.path_suffix),
             "label_key": label_key,
             "signer_key": signer_key,
             "seed": int(args.seed),

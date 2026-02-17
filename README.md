@@ -185,8 +185,13 @@ word_model:
   frame_interval: 2
   step: 4
   topk: 5
+  mean: [123.675, 116.28, 103.53]
+  std: [58.395, 57.12, 57.375]
+  letterbox: true
+  pad_value: 114
+  use_hand_presence_gate: true
 thresholds:
-  no_event_label: no_event
+  no_event_label: "---"
   th_no_event: 0.60
   th_unknown: 0.55
   th_margin: 0.10
@@ -210,12 +215,29 @@ runtime_log:
 
 - `backend/scripts/download_slovo.md`
 
+Быстрое скачивание baseline-модели (и опционально датасета):
+
+```bash
+./backend/scripts/download_slovo_assets.sh
+# или с датасетом:
+./backend/scripts/download_slovo_assets.sh --with-dataset
+```
+
+Экспорт `labels.txt` из официального `constants.py` Slovo:
+
+```bash
+python backend/scripts/export_slovo_labels.py \
+  --constants backend/data/slovo_repo/constants.py \
+  --out backend/artifacts/labels.txt
+```
+
 Групповой split без утечки signer:
 
 ```bash
 python backend/scripts/prepare_slovo_splits.py \
   --annotations backend/data/slovo/annotations.csv \
   --out backend/data/slovo/splits.json \
+  --path-prefix backend/data/slovo/videos \
   --val-ratio 0.2 \
   --test-ratio 0.1 \
   --seed 42
@@ -249,7 +271,7 @@ python backend/train/export_onnx.py \
 
 Скрипт `backend/train/export_onnx.py` в этом MVP является каркасом: если у вас уже есть baseline Slovo checkpoint, замените `DummyVideoModel` на конкретную архитектуру baseline перед экспортом.
 
-Примечание: preprocess в words mode сейчас `ImageNet normalize + resize(224)`; это рабочий дефолт, но его нужно сверить с baseline Slovo перед production.
+Примечание: preprocess в words mode приведен к baseline Slovo (`letterbox 224 + mean/std из config_example`).
 
 ### 4) Проверка realtime логов
 

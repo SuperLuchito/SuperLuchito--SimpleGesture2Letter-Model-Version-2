@@ -15,6 +15,9 @@ backend/artifacts/faiss.index
 backend/artifacts/meta.json
 backend/artifacts/uncertain_events/
 backend/artifacts/models/
+backend/artifacts/*.onnx
+backend/data/slovo/
+backend/data/slovo_repo/
 backend/gallery/**
 !backend/gallery/
 !backend/gallery/.gitkeep

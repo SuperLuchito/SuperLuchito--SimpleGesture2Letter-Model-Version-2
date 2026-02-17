@@ -151,6 +151,10 @@ class RuntimeContext:
                     labels_path=labels_path,
                     input_size=cfg.word_input_size,
                     ort_num_threads=cfg.word_ort_num_threads,
+                    mean=tuple(cfg.word_mean),
+                    std=tuple(cfg.word_std),
+                    letterbox=cfg.word_letterbox,
+                    pad_value=cfg.word_pad_value,
                 )
                 self.errors.pop("word_model", None)
             except Exception as exc:
@@ -296,18 +300,21 @@ class SessionProcessor:
         if self.words_service is not None:
             self.words_service.clear_text()
 
-    def _none_words_message(self, *, now_ms: int, error: str = "") -> dict[str, Any]:
+    def _none_words_message(self, *, now_ms: int, error: str = "", hand_present: bool = False) -> dict[str, Any]:
+        text_value = ""
+        if self.words_service is not None:
+            text_value = self.words_service.decoder.text_value
         return build_inference_message(
             status="NONE",
             letter="NONE",
             word="NONE",
             score=0.0,
             confidence=0.0,
-            hand_present=False,
+            hand_present=hand_present,
             bbox_norm=[0.0, 0.0, 0.0, 0.0],
             hold_elapsed_ms=0,
             hold_target_ms=max(1, int(self.runtime.config.word_hold_frames)),
-            text_value="",
+            text_value=text_value,
             committed_now=False,
             topk=[],
             vlm=VLMDecision(),
@@ -474,6 +481,12 @@ class SessionProcessor:
         if self.recognition_mode == "words":
             if self.words_service is None:
                 return self._none_words_message(now_ms=now_ms, error=self.words_init_error or "words service unavailable")
+            if cfg.word_use_hand_presence_gate and cv2 is not None:
+                detector = self.runtime.get_hand_detector()
+                if detector is not None:
+                    detection = detector.detect(frame_bgr, now_ms)
+                    if not detection.hand_present:
+                        return self._none_words_message(now_ms=now_ms, hand_present=False)
             try:
                 return self.words_service.update(frame_bgr, now_ms)
             except Exception as exc:

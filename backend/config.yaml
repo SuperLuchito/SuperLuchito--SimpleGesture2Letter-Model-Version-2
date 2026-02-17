@@ -1,4 +1,4 @@
-recognition_mode: letters
+recognition_mode: words
 frontend_fps: 8
 jpeg_quality: 0.75
 hold_ms: 700
@@ -43,8 +43,19 @@ word_model:
   frame_interval: 2
   step: 4
   topk: 5
+  mean:
+  - 123.675
+  - 116.28
+  - 103.53
+  std:
+  - 58.395
+  - 57.12
+  - 57.375
+  letterbox: true
+  pad_value: 114
+  use_hand_presence_gate: true
 thresholds:
-  no_event_label: no_event
+  no_event_label: '---'
   th_no_event: 0.6
   th_unknown: 0.55
   th_margin: 0.1

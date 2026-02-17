@@ -7,6 +7,12 @@
 1. Перейдите в репозиторий Slovo:
    - `hukenovs/slovo` на GitHub
 2. Скачайте необходимые файлы датасета (видео/аннотации/landmarks) согласно инструкции Slovo.
+   - Либо используйте скрипт:
+
+```bash
+./backend/scripts/download_slovo_assets.sh --with-dataset
+```
+
 3. Разместите данные локально, например:
 
 ```text
@@ -24,6 +30,7 @@ backend/data/slovo/
 python backend/scripts/prepare_slovo_splits.py \
   --annotations backend/data/slovo/annotations.csv \
   --out backend/data/slovo/splits.json \
+  --path-prefix backend/data/slovo/videos \
   --val-ratio 0.2 \
   --test-ratio 0.1 \
   --seed 42
@@ -57,4 +64,13 @@ python backend/train/export_onnx.py \
 backend/artifacts/labels.txt
 ```
 
-Добавьте класс no_event (`no_event` или `_no_event`) для работы фильтра NONE.
+Экспорт из официального `constants.py` Slovo:
+
+```bash
+python backend/scripts/export_slovo_labels.py \
+  --constants backend/data/slovo_repo/constants.py \
+  --out backend/artifacts/labels.txt
+```
+
+Для baseline `mvit32-2.onnx` класс NONE уже есть в конце словаря как `---`
+(используйте `thresholds.no_event_label: '---'` в конфиге).

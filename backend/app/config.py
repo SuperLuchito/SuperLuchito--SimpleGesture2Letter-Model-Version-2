@@ -53,7 +53,12 @@ class AppConfig:
     word_frame_interval: int = 2
     word_step: int = 4
     word_topk: int = 5
-    word_no_event_label: str = "no_event"
+    word_mean: tuple[float, float, float] = (123.675, 116.28, 103.53)
+    word_std: tuple[float, float, float] = (58.395, 57.12, 57.375)
+    word_letterbox: bool = True
+    word_pad_value: int = 114
+    word_use_hand_presence_gate: bool = True
+    word_no_event_label: str = "---"
     word_th_no_event: float = 0.60
     word_th_unknown: float = 0.55
     word_th_margin: float = 0.10
@@ -81,6 +86,11 @@ class AppConfig:
                     "frame_interval": "word_frame_interval",
                     "step": "word_step",
                     "topk": "word_topk",
+                    "mean": "word_mean",
+                    "std": "word_std",
+                    "letterbox": "word_letterbox",
+                    "pad_value": "word_pad_value",
+                    "use_hand_presence_gate": "word_use_hand_presence_gate",
                 },
             ),
             (
@@ -141,6 +151,14 @@ class AppConfig:
         if cfg.recognition_mode not in {"letters", "words"}:
             cfg.recognition_mode = "letters"
         cfg.letters_allowlist = cfg.letters_allowlist or []
+        try:
+            cfg.word_mean = tuple(float(x) for x in cfg.word_mean)  # type: ignore[assignment]
+            cfg.word_std = tuple(float(x) for x in cfg.word_std)  # type: ignore[assignment]
+            if len(cfg.word_mean) != 3 or len(cfg.word_std) != 3:
+                raise ValueError
+        except Exception:
+            cfg.word_mean = (123.675, 116.28, 103.53)
+            cfg.word_std = (58.395, 57.12, 57.375)
         return cfg
 
     @classmethod
@@ -157,6 +175,8 @@ class AppConfig:
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["letters_allowlist"] = self.letters_allowlist or []
+        result["word_mean"] = list(self.word_mean)
+        result["word_std"] = list(self.word_std)
         return result
 
     def write_yaml(self, path: str | Path) -> None:
